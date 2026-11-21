@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2 } from 'lucide-react';
-import { PrototypeBar } from './components/PrototypeBar';
 import {
   INITIAL_LANDING_CONTENT,
   INITIAL_MEMBERS,
@@ -19,7 +18,6 @@ import {
   ProgramRules,
   StaffAccount,
   Transaction,
-  ViewportMode,
   Voucher,
   WAMessageTemplate,
 } from './types';
@@ -31,7 +29,6 @@ import { LandingView } from './views/LandingView';
 import { MemberAppView, StampEventPayload } from './views/MemberAppView';
 
 export default function App() {
-  const [viewport, setViewport] = useState<ViewportMode>('desktop');
   const [route, setRoute] = useState<AppRoute>('landing');
   const [authMemberMode, setAuthMemberMode] = useState<'masuk' | 'daftar'>(
     'masuk'
@@ -85,20 +82,6 @@ export default function App() {
 
   const activeMember =
     members.find((m) => m.id === activeMemberId) || members[0];
-
-  const handleResetDemo = () => {
-    setMembers(INITIAL_MEMBERS);
-    setTransactions(INITIAL_TRANSACTIONS);
-    setStaffAccounts(INITIAL_STAFF);
-    setRules(INITIAL_RULES);
-    setLandingContent(INITIAL_LANDING_CONTENT);
-    setOutlets(OUTLETS);
-    setWaTemplates(INITIAL_WA_TEMPLATES);
-    setActiveMemberId('mem-sekar');
-    setCashierPreselectMemberId(null);
-    setLastStampEvent(null);
-    showToast('Data simulasi dikembalikan ke kondisi awal');
-  };
 
   const handleLoginMember = (identifier: string, pin: string): boolean => {
     const q = identifier.toLowerCase();
@@ -165,19 +148,6 @@ export default function App() {
       setRoute('admin');
       showToast(`Masuk sebagai ${staff.name}`);
     }
-  };
-
-  const handleQuickRouteNavigate = (nextRoute: AppRoute) => {
-    if (nextRoute === 'cashier' && activeStaff.role !== 'kasir') {
-      setActiveStaff(staffAccounts[0]);
-      setActiveCashierOutlet('pemuda');
-    }
-    if (nextRoute === 'admin' && activeStaff.role === 'kasir') {
-      const adminStaff =
-        staffAccounts.find((s) => s.role !== 'kasir') || staffAccounts[3];
-      setActiveStaff(adminStaff);
-    }
-    setRoute(nextRoute);
   };
 
   const handleRecordTransaction = (payload: {
@@ -524,44 +494,12 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#E7E3DA] dark:bg-[#070A0E]">
-      {/* Slim Prototype Switcher Bar */}
-      <PrototypeBar
-        viewport={viewport}
-        onViewportChange={setViewport}
-        route={route}
-        onNavigate={handleQuickRouteNavigate}
-        onResetDemo={handleResetDemo}
-      />
+    <div className="min-h-screen flex flex-col bg-[#FAF8F4] dark:bg-[#0E1319]">
+      <div className="@container flex-1 w-full bg-[#FAF8F4] dark:bg-[#0E1319]">
+        {renderActiveScreen()}
+      </div>
 
-      {/* Viewport Frame */}
-      {viewport === 'desktop' ? (
-        <div className="@container flex-1 w-full bg-[#FAF8F4] dark:bg-[#0E1319]">
-          {renderActiveScreen()}
-        </div>
-      ) : (
-        <div className="flex-1 flex flex-col items-center justify-center py-5 px-3">
-          {/* 390px Mobile Device Frame */}
-          <div className="relative w-[390px] max-w-full h-[812px] max-h-[calc(100vh-88px)] rounded-[42px] border-[8px] border-[#16202C] dark:border-[#2C3747] bg-[#FAF8F4] dark:bg-[#0E1319] shadow-2xl overflow-hidden flex flex-col transform-[translateZ(0)]">
-            {/* Simulated Mobile Status Bar */}
-            <div className="h-8 px-6 flex items-center justify-between text-[11px] font-semibold bg-[#FAF8F4] dark:bg-[#0E1319] text-[#16202C] dark:text-[#F4F1EA] shrink-0 select-none">
-              <span className="tabular-nums">12:14</span>
-              <div className="w-20 h-4 rounded-full bg-[#16202C] dark:bg-[#232D3B]" />
-              <span className="font-mono-code text-[10px]">5G · 92%</span>
-            </div>
-
-            {/* Scrollable 390px Container */}
-            <div className="@container flex-1 overflow-y-auto no-scrollbar">
-              {renderActiveScreen()}
-            </div>
-          </div>
-          <p className="mt-2.5 text-[11px] text-[#5B6470] dark:text-[#94A3B8]">
-            Pratinjau Mobile (lebar 390px) — semua tombol &amp; tab interaktif
-          </p>
-        </div>
-      )}
-
-      {/* Toast Notification (matching scan_0369d9ed.pdf green toast) */}
+      {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-[90] max-w-sm rounded-xl bg-[#EAF9EE] dark:bg-emerald-950 border border-[#BCE6C7] dark:border-emerald-800 text-[#15622C] dark:text-emerald-200 px-4 py-3 shadow-lg flex items-center gap-2.5 text-xs font-medium">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
