@@ -7,13 +7,13 @@ interface AuthMemberViewProps {
   darkMode: boolean;
   onToggleDark: () => void;
   onBackLanding: () => void;
-  onLoginMember: (identifier: string, pin: string) => boolean;
+  onLoginMember: (identifier: string, pin: string) => Promise<boolean> | boolean;
   onRegisterMember: (payload: {
     name: string;
     contact: string;
     pin: string;
     birthday?: string;
-  }) => Member;
+  }) => Promise<{ ok: boolean; member?: Member; error?: string }>;
 }
 
 export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
@@ -30,6 +30,7 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const birthdayInputRef = useRef<HTMLInputElement | null>(null);
 
   const openDatePicker = () => {
@@ -72,20 +73,27 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
     return `${Number(day)} ${monthName} ${year}`;
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!identifier.trim() || pin.trim().length !== 6) {
       setError('Masukkan nomor WhatsApp/email dan PIN 6 digit.');
       return;
     }
-    const ok = onLoginMember(identifier.trim(), pin.trim());
-    if (!ok) {
-      setError('Akun tidak ditemukan atau PIN tidak cocok. Periksa kembali nomor/email dan PIN Anda.');
+    setIsSubmitting(true);
+    try {
+      const ok = await onLoginMember(identifier.trim(), pin.trim());
+      if (!ok) {
+        setError(
+          'Akun tidak ditemukan atau PIN tidak cocok. Periksa kembali nomor/email dan PIN Anda.'
+        );
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!name.trim()) {
@@ -100,12 +108,22 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
       setError('PIN harus terdiri dari 6 digit angka.');
       return;
     }
-    onRegisterMember({
-      name: name.trim(),
-      contact: identifier.trim(),
-      pin: pin.trim(),
-      birthday: formatBirthdayIndonesian(birthday),
-    });
+    setIsSubmitting(true);
+    try {
+      const res = await onRegisterMember({
+        name: name.trim(),
+        contact: identifier.trim(),
+        pin: pin.trim(),
+        birthday: formatBirthdayIndonesian(birthday),
+      });
+      if (!res.ok) {
+        setError(
+          res.error || 'Pendaftaran gagal disimpan. Silakan coba lagi.'
+        );
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const isMasukReady = identifier.trim().length > 3 && pin.trim().length === 6;
@@ -238,13 +256,14 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
 
                   <button
                     type="submit"
-                    className={`w-full py-3 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                    disabled={isSubmitting}
+                    className={`w-full py-3 rounded-full text-xs font-semibold transition-all cursor-pointer disabled:opacity-60 ${
                       isMasukReady
                         ? 'bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] hover:opacity-90'
                         : 'bg-[#8E959E] text-white hover:bg-[#16202C]'
                     }`}
                   >
-                    Masuk
+                    {isSubmitting ? 'Memproses…' : 'Masuk'}
                   </button>
                 </form>
               ) : (
@@ -333,13 +352,14 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
 
                   <button
                     type="submit"
-                    className={`w-full py-3 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                    disabled={isSubmitting}
+                    className={`w-full py-3 rounded-full text-xs font-semibold transition-all cursor-pointer disabled:opacity-60 ${
                       isDaftarReady
                         ? 'bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] hover:opacity-90'
                         : 'bg-[#8E959E] text-white hover:bg-[#16202C]'
                     }`}
                   >
-                    Buat akun
+                    {isSubmitting ? 'Mendaftar…' : 'Buat akun'}
                   </button>
                 </form>
               )}

@@ -50,13 +50,13 @@ interface CashierViewProps {
     grossAmount: number;
     voucherId?: string;
     cashierName: string;
-  }) => {
+  }) => Promise<{
     stampEarned: boolean;
     newStamps: number;
     newlyIssuedVoucher?: string;
     netAmount: number;
     discountAmount: number;
-  };
+  }>;
 }
 
 type FindTab = 'scan' | 'manual';
@@ -114,6 +114,7 @@ export const CashierView: React.FC<CashierViewProps> = ({
   const [selectedVoucherId, setSelectedVoucherId] = useState<string>('');
   const [cardAnimSlot, setCardAnimSlot] = useState<number | null>(null);
   const [cardAnimNonce, setCardAnimNonce] = useState(0);
+  const [isSubmittingTx, setIsSubmittingTx] = useState(false);
   const [lastReceipt, setLastReceipt] = useState<{
     memberName: string;
     netAmount: number;
@@ -429,33 +430,37 @@ export const CashierView: React.FC<CashierViewProps> = ({
     }
   };
 
-  const handleSubmitTx = (e: React.FormEvent) => {
+  const handleSubmitTx = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedMember || grossAmount <= 0) return;
+    if (!selectedMember || grossAmount <= 0 || isSubmittingTx) return;
 
     const itemNames = selectedOrderItems.map((item) => item.name);
+    setIsSubmittingTx(true);
+    try {
+      const result = await onRecordTransaction({
+        memberId: selectedMember.id,
+        outlet: activeOutlet,
+        items: itemNames.length > 0 ? itemNames : ['Pembelian Menu RTRW'],
+        grossAmount,
+        voucherId: selectedVoucherId || undefined,
+        cashierName: staff.name,
+      });
 
-    const result = onRecordTransaction({
-      memberId: selectedMember.id,
-      outlet: activeOutlet,
-      items: itemNames.length > 0 ? itemNames : ['Pembelian Menu RTRW'],
-      grossAmount,
-      voucherId: selectedVoucherId || undefined,
-      cashierName: staff.name,
-    });
-
-    setLastReceipt({
-      memberName: selectedMember.name,
-      netAmount: result.netAmount,
-      stampEarned: result.stampEarned,
-      newStamps: result.newStamps,
-      newlyIssuedVoucher: result.newlyIssuedVoucher,
-    });
-    if (result.stampEarned) {
-      setCardAnimSlot(result.newStamps);
-      setCardAnimNonce((n) => n + 1);
+      setLastReceipt({
+        memberName: selectedMember.name,
+        netAmount: result.netAmount,
+        stampEarned: result.stampEarned,
+        newStamps: result.newStamps,
+        newlyIssuedVoucher: result.newlyIssuedVoucher,
+      });
+      if (result.stampEarned) {
+        setCardAnimSlot(result.newStamps);
+        setCardAnimNonce((n) => n + 1);
+      }
+      setSelectedVoucherId('');
+    } finally {
+      setIsSubmittingTx(false);
     }
-    setSelectedVoucherId('');
   };
 
   return (
@@ -1129,10 +1134,10 @@ export const CashierView: React.FC<CashierViewProps> = ({
 
                 <button
                   type="submit"
-                  disabled={grossAmount <= 0}
+                  disabled={grossAmount <= 0 || isSubmittingTx}
                   className="w-full py-3 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity cursor-pointer"
                 >
-                  {uiConfig.cashierSubmitButtonText}
+                  {isSubmittingTx ? 'Menyimpan Transaksi…' : uiConfig.cashierSubmitButtonText}
                 </button>
               </form>
             )}

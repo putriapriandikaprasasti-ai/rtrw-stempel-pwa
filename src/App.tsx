@@ -12,6 +12,27 @@ import {
   OUTLETS,
 } from './data/mockData';
 import {
+  addDays,
+  addYears,
+  formatIsoDate,
+  formatShortDateId,
+  formatTimeHm,
+} from './lib/dateUtils';
+import { supabase } from './lib/supabase';
+import {
+  insertMemberAndCardInSupabase,
+  loadInitialDataFromSupabase,
+  recordTransactionInSupabase,
+  syncLandingContentInSupabase,
+  syncMemberExpiryInSupabase,
+  syncMenuItemsInSupabase,
+  syncOutletsInSupabase,
+  syncRulesInSupabase,
+  syncUiConfigInSupabase,
+  syncWaTemplateInSupabase,
+  upsertStaffInSupabase,
+} from './lib/supabaseDb';
+import {
   AppRoute,
   LandingContent,
   Member,
@@ -21,6 +42,7 @@ import {
   ProgramRules,
   StaffAccount,
   StaffMemberUiConfig,
+  StampHistoryEntry,
   Transaction,
   Voucher,
   WAMessageTemplate,
@@ -39,8 +61,11 @@ export default function App() {
   );
   const [darkMode, setDarkMode] = useState(false);
 
-  // Live prototype state
+  // State aplikasi yang disinkronkan dengan Supabase
   const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
+  const [activeStampCardIds, setActiveStampCardIds] = useState<
+    Record<string, string>
+  >({});
   const [transactions, setTransactions] =
     useState<Transaction[]>(INITIAL_TRANSACTIONS);
   const [staffAccounts, setStaffAccounts] =
@@ -56,7 +81,7 @@ export default function App() {
   const [waTemplates, setWaTemplates] =
     useState<WAMessageTemplate[]>(INITIAL_WA_TEMPLATES);
 
-  // Active session state
+  // Sesi aktif pengguna
   const [activeMemberId, setActiveMemberId] = useState<string>('mem-sekar');
   const [activeStaff, setActiveStaff] = useState<StaffAccount>(
     INITIAL_STAFF[0]
@@ -80,6 +105,45 @@ export default function App() {
     }
   }, [darkMode]);
 
+  // Ambil data awal dari tabel Supabase saat halaman dimuat
+  useEffect(() => {
+    let cancelled = false;
+
+    const initSupabase = async () => {
+      try {
+        const loaded = await loadInitialDataFromSupabase();
+        if (!loaded || cancelled) return;
+
+        if (loaded.outlets) setOutlets(loaded.outlets);
+        if (loaded.members) {
+          setMembers(loaded.members);
+          if (
+            loaded.members.length > 0 &&
+            !loaded.members.some((m) => m.id === activeMemberId)
+          ) {
+            setActiveMemberId(loaded.members[0].id);
+          }
+        }
+        setActiveStampCardIds(loaded.activeStampCardIds);
+        if (loaded.transactions) setTransactions(loaded.transactions);
+        if (loaded.staffAccounts) setStaffAccounts(loaded.staffAccounts);
+        if (loaded.menuItems) setMenuItems(loaded.menuItems);
+        if (loaded.rules) setRules(loaded.rules);
+        if (loaded.landingContent) setLandingContent(loaded.landingContent);
+        if (loaded.uiConfig) setUiConfig(loaded.uiConfig);
+        if (loaded.waTemplates) setWaTemplates(loaded.waTemplates);
+      } catch (err) {
+        console.error('[Supabase] Gagal memuat data awal aplikasi:', err);
+      }
+    };
+
+    void initSupabase();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => {
@@ -90,15 +154,39 @@ export default function App() {
   const activeMember =
     members.find((m) => m.id === activeMemberId) || members[0];
 
-  const handleLoginMember = (identifier: string, pin: string): boolean => {
+  const handleLoginMember = async (
+    identifier: string,
+    pin: string
+  ): Promise<boolean> => {
     const q = identifier.toLowerCase();
-    const found = members.find(
+    let found = members.find(
       (m) =>
         (m.phone === identifier ||
           (m.email && m.email.toLowerCase() === q) ||
           m.serialCode.toLowerCase() === q) &&
         m.pin === pin
     );
+
+    if (!found && supabase) {
+      const { data, error } = await supabase
+        .from('members')
+        .select('*')
+        .or(`phone.eq.${identifier},email.ilike.${q},serial_code.ilike.${q}`)
+        .eq('pin', pin)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Supabase] Gagal memeriksa login member:', error);
+      } else if (data) {
+        const loaded = await loadInitialDataFromSupabase();
+        if (loaded?.members) {
+          setMembers(loaded.members);
+          setActiveStampCardIds(loaded.activeStampCardIds);
+          found = loaded.members.find((m) => m.id === data.id);
+        }
+      }
+    }
+
     if (!found) return false;
     setActiveMemberId(found.id);
     setRoute('member-app');
@@ -106,21 +194,30 @@ export default function App() {
     return true;
   };
 
-  const handleRegisterMember = (payload: {
+  const handleRegisterMember = async (payload: {
     name: string;
     contact: string;
     pin: string;
     birthday?: string;
-  }): Member => {
+  }): Promise<{ ok: boolean; member?: Member; error?: string }> => {
+    const now = new Date();
+    const todayDisplay = formatShortDateId(now);
+    const expiresDisplay = formatShortDateId(addYears(now, 1));
     const firstName = payload.name.split(' ')[0] || payload.name;
     const isEmail = payload.contact.includes('@');
     const codeSuffix = Math.random().toString(16).slice(2, 10).toUpperCase();
+    const id = `mem-${Date.now()}`;
+    const phone = isEmail
+      ? `08${String(Date.now()).slice(-10)}`
+      : payload.contact;
+    const email = isEmail ? payload.contact : undefined;
+
     const newMember: Member = {
-      id: `mem-${Date.now()}`,
+      id,
       name: payload.name,
       firstName,
-      phone: isEmail ? '081200009999' : payload.contact,
-      email: isEmail ? payload.contact : undefined,
+      phone,
+      email,
       pin: payload.pin,
       cardNumber: '01',
       serialCode: `RTRW-${codeSuffix}`,
@@ -129,20 +226,38 @@ export default function App() {
       totalSpentAllTime: 0,
       completedCards: 0,
       birthday: payload.birthday,
-      joinedAt: '21 Nov 2026',
-      lastUsedAt: '21 Nov 2026',
+      joinedAt: todayDisplay,
+      lastUsedAt: todayDisplay,
       lastUsedOutlet: 'pemuda',
-      membershipExpiresAt: '21 Nov 2027',
+      membershipExpiresAt: expiresDisplay,
       membershipStatus: 'aktif',
       favoriteOutlet: 'pemuda',
       vouchers: [],
       stampDates: [],
     };
+
+    const insertResult = await insertMemberAndCardInSupabase(newMember);
+    if (!insertResult.ok && supabase) {
+      return {
+        ok: false,
+        error:
+          insertResult.error ||
+          'Gagal mendaftarkan akun ke database. Silakan coba lagi.',
+      };
+    }
+
+    if (insertResult.cardId) {
+      setActiveStampCardIds((prev) => ({
+        ...prev,
+        [newMember.id]: insertResult.cardId!,
+      }));
+    }
+
     setMembers((prev) => [newMember, ...prev]);
     setActiveMemberId(newMember.id);
     setRoute('member-app');
     showToast(`Akun warga dibuat untuk ${firstName}`);
-    return newMember;
+    return { ok: true, member: newMember };
   };
 
   const handleLoginStaff = (staff: StaffAccount, selectedOutlet: OutletId) => {
@@ -157,7 +272,7 @@ export default function App() {
     }
   };
 
-  const handleRecordTransaction = (payload: {
+  const handleRecordTransaction = async (payload: {
     memberId: string;
     outlet: OutletId;
     items: string[];
@@ -165,6 +280,14 @@ export default function App() {
     voucherId?: string;
     cashierName: string;
   }) => {
+    const now = new Date();
+    const todayDisplay = formatShortDateId(now);
+    const voucherExpiresDisplay = formatShortDateId(
+      addDays(now, rules.voucherValidityDays)
+    );
+    const isoDate = formatIsoDate(now);
+    const timeDisplay = formatTimeHm(now);
+
     const target = members.find((m) => m.id === payload.memberId)!;
     const chosenVoucher = payload.voucherId
       ? target.vouchers.find((v) => v.id === payload.voucherId)
@@ -189,12 +312,14 @@ export default function App() {
 
     let newStamps = target.stamps;
     let newlyIssuedVoucher: string | undefined;
+    let newlyCreatedVoucherObj: Voucher | undefined;
+
     const updatedVouchers: Voucher[] = target.vouchers.map((v) =>
       v.id === payload.voucherId
         ? {
             ...v,
             status: 'used',
-            usedAt: '21 Nov 2026',
+            usedAt: todayDisplay,
             usedOutlet: payload.outlet,
           }
         : v
@@ -202,12 +327,13 @@ export default function App() {
 
     let newCardNumber = target.cardNumber;
     let updatedStampDates = [...target.stampDates];
+    let newStampEntry: StampHistoryEntry | undefined;
 
     if (stampEarned) {
       const incremented = target.stamps + 1;
       if (incremented === 3) {
         newlyIssuedVoucher = rules.milestone3Label;
-        updatedVouchers.unshift({
+        newlyCreatedVoucherObj = {
           id: `vcr-${Date.now()}-3`,
           code: `RTRW-D10-${Math.floor(1000 + Math.random() * 9000)}`,
           title: rules.milestone3Label,
@@ -215,13 +341,14 @@ export default function App() {
           type: 'discount_10',
           discountPercent: 10,
           status: 'active',
-          issuedAt: '21 Nov 2026',
-          expiresAt: '21 Des 2026',
+          issuedAt: todayDisplay,
+          expiresAt: voucherExpiresDisplay,
           description: 'Potongan 10% otomatis dari pencapaian stempel ke-3.',
-        });
+        };
+        updatedVouchers.unshift(newlyCreatedVoucherObj);
       } else if (incremented === 6) {
         newlyIssuedVoucher = rules.milestone6Label;
-        updatedVouchers.unshift({
+        newlyCreatedVoucherObj = {
           id: `vcr-${Date.now()}-6`,
           code: `RTRW-D15-${Math.floor(1000 + Math.random() * 9000)}`,
           title: rules.milestone6Label,
@@ -229,13 +356,14 @@ export default function App() {
           type: 'discount_15',
           discountPercent: 15,
           status: 'active',
-          issuedAt: '21 Nov 2026',
-          expiresAt: '21 Des 2026',
+          issuedAt: todayDisplay,
+          expiresAt: voucherExpiresDisplay,
           description: 'Potongan 15% otomatis dari pencapaian stempel ke-6.',
-        });
+        };
+        updatedVouchers.unshift(newlyCreatedVoucherObj);
       } else if (incremented === 10) {
         newlyIssuedVoucher = rules.milestone10Label;
-        updatedVouchers.unshift({
+        newlyCreatedVoucherObj = {
           id: `vcr-${Date.now()}-10`,
           code: `RTRW-GRT-${Math.floor(1000 + Math.random() * 9000)}`,
           title: rules.milestone10Label,
@@ -243,10 +371,11 @@ export default function App() {
           type: 'free_drink',
           maxDiscountValue: 40000,
           status: 'active',
-          issuedAt: '21 Nov 2026',
-          expiresAt: '21 Des 2026',
+          issuedAt: todayDisplay,
+          expiresAt: voucherExpiresDisplay,
           description: 'Gratis 1 minuman favorit pilihanmu di kedua outlet.',
-        });
+        };
+        updatedVouchers.unshift(newlyCreatedVoucherObj);
       }
 
       if (incremented > 10) {
@@ -255,56 +384,51 @@ export default function App() {
           2,
           '0'
         );
-        updatedStampDates = [
-          {
-            slot: 1,
-            date: '21 Nov 2026',
-            outlet: payload.outlet,
-            item: payload.items[0] || 'Menu RTRW',
-          },
-        ];
-      } else {
-        newStamps = incremented;
-        updatedStampDates.push({
-          slot: newStamps,
-          date: '21 Nov 2026',
+        newStampEntry = {
+          slot: 1,
+          date: todayDisplay,
           outlet: payload.outlet,
           item: payload.items[0] || 'Menu RTRW',
-        });
+        };
+        updatedStampDates = [newStampEntry];
+      } else {
+        newStamps = incremented;
+        newStampEntry = {
+          slot: newStamps,
+          date: todayDisplay,
+          outlet: payload.outlet,
+          item: payload.items[0] || 'Menu RTRW',
+        };
+        updatedStampDates.push(newStampEntry);
       }
     }
 
-    setMembers((prev) =>
-      prev.map((m) =>
-        m.id === payload.memberId
-          ? {
-              ...m,
-              cardNumber: newCardNumber,
-              stamps: newStamps,
-              totalCupsAllTime: m.totalCupsAllTime + 1,
-              totalSpentAllTime: m.totalSpentAllTime + netAmount,
-              completedCards:
-                stampEarned && target.stamps + 1 === 10
-                  ? m.completedCards + 1
-                  : m.completedCards,
-              lastUsedAt: '21 Nov 2026',
-              lastUsedOutlet: payload.outlet,
-              vouchers: updatedVouchers,
-              stampDates: updatedStampDates,
-            }
-          : m
-      )
-    );
+    const updatedMember: Member = {
+      ...target,
+      cardNumber: newCardNumber,
+      stamps: newStamps,
+      totalCupsAllTime: target.totalCupsAllTime + 1,
+      totalSpentAllTime: target.totalSpentAllTime + netAmount,
+      completedCards:
+        stampEarned && target.stamps + 1 === 10
+          ? target.completedCards + 1
+          : target.completedCards,
+      lastUsedAt: todayDisplay,
+      lastUsedOutlet: payload.outlet,
+      vouchers: updatedVouchers,
+      stampDates: updatedStampDates,
+    };
 
+    const txId = `TX-${isoDate.replace(/-/g, '')}-${String(Date.now()).slice(-6)}`;
     const newTx: Transaction = {
-      id: `TX-20261121-${String(transactions.length + 1).padStart(2, '0')}`,
+      id: txId,
       memberId: target.id,
       memberName: target.name,
       memberSerial: target.serialCode,
       outlet: payload.outlet,
-      date: '21 Nov 2026',
-      time: '12:18',
-      isoDate: '2026-11-21',
+      date: todayDisplay,
+      time: timeDisplay,
+      isoDate,
       items: payload.items,
       grossAmount: payload.grossAmount,
       discountAmount,
@@ -313,6 +437,28 @@ export default function App() {
       voucherUsedTitle: chosenVoucher?.title,
       cashierName: payload.cashierName,
     };
+
+    const { nextActiveCardId } = await recordTransactionInSupabase({
+      tx: newTx,
+      voucherUsedId: chosenVoucher?.id,
+      cashierId: activeStaff?.id,
+      updatedMember,
+      previousStamps: target.stamps,
+      activeCardId: activeStampCardIds[target.id],
+      newlyIssuedVoucher: newlyCreatedVoucherObj,
+      newStampEntry,
+    });
+
+    if (nextActiveCardId) {
+      setActiveStampCardIds((prev) => ({
+        ...prev,
+        [target.id]: nextActiveCardId,
+      }));
+    }
+
+    setMembers((prev) =>
+      prev.map((m) => (m.id === payload.memberId ? updatedMember : m))
+    );
     setTransactions((prev) => [newTx, ...prev]);
 
     if (stampEarned) {
@@ -370,6 +516,18 @@ export default function App() {
           />
         );
       case 'member-app':
+        if (!activeMember) {
+          return (
+            <AuthMemberView
+              initialMode="masuk"
+              darkMode={darkMode}
+              onToggleDark={() => setDarkMode((d) => !d)}
+              onBackLanding={() => setRoute('landing')}
+              onLoginMember={handleLoginMember}
+              onRegisterMember={handleRegisterMember}
+            />
+          );
+        }
         return (
           <MemberAppView
             member={activeMember}
@@ -434,28 +592,54 @@ export default function App() {
             onLogout={() => setRoute('auth-staff')}
             onUpdateRules={(next) => {
               setRules(next);
+              void syncRulesInSupabase(next);
               showToast('Aturan program diperbarui');
             }}
             onUpdateLandingContent={(next) => {
               setLandingContent(next);
+              void syncLandingContentInSupabase(next);
               showToast('Konten & foto Beranda diperbarui');
             }}
             onUpdateUiConfig={(next) => {
               setUiConfig(next);
+              void syncUiConfigInSupabase(next);
               showToast('Teks Login Staf, Kasir & Kartu Member diperbarui');
             }}
             onUpdateOutlets={(next) => {
               setOutlets(next);
+              void syncOutletsInSupabase(next);
             }}
             onUpdateMenuItems={(next, message) => {
+              const nextIds = new Set(next.map((m) => m.id));
+              const removedIds = menuItems
+                .filter((m) => !nextIds.has(m.id))
+                .map((m) => m.id);
               setMenuItems(next);
+              void syncMenuItemsInSupabase(next);
+              if (removedIds.length > 0 && supabase) {
+                void supabase
+                  .from('menu_items')
+                  .delete()
+                  .in('id', removedIds)
+                  .then(({ error }) => {
+                    if (error) {
+                      console.error(
+                        '[Supabase] Gagal menghapus menu_items:',
+                        error
+                      );
+                    }
+                  });
+              }
               if (message) showToast(message);
             }}
             onToggleWaTemplate={(id) => {
               setWaTemplates((prev) =>
-                prev.map((t) =>
-                  t.id === id ? { ...t, enabled: !t.enabled } : t
-                )
+                prev.map((t) => {
+                  if (t.id !== id) return t;
+                  const updated = { ...t, enabled: !t.enabled };
+                  void syncWaTemplateInSupabase(updated);
+                  return updated;
+                })
               );
             }}
             onSendTestWa={(tpl) => {
@@ -463,9 +647,12 @@ export default function App() {
             }}
             onToggleStaffActive={(id) => {
               setStaffAccounts((prev) =>
-                prev.map((s) =>
-                  s.id === id ? { ...s, active: !s.active } : s
-                )
+                prev.map((s) => {
+                  if (s.id !== id) return s;
+                  const updated = { ...s, active: !s.active };
+                  void upsertStaffInSupabase(updated);
+                  return updated;
+                })
               );
             }}
             onAddStaff={(payload) => {
@@ -482,6 +669,7 @@ export default function App() {
                 lastActive: 'Baru dibuat',
               };
               setStaffAccounts((prev) => [...prev, newStaff]);
+              void upsertStaffInSupabase(newStaff);
               showToast(`Akun kasir ${payload.name} ditambahkan`);
             }}
             onUpdateStaff={(id, payload) => {
@@ -500,7 +688,7 @@ export default function App() {
                       : s.role === 'admin_outlet'
                         ? `Admin ${outletLabel}`
                         : s.roleLabel;
-                  return {
+                  const updated: StaffAccount = {
                     ...s,
                     name: payload.name,
                     username: payload.username,
@@ -508,22 +696,26 @@ export default function App() {
                     roleLabel: nextRoleLabel,
                     password: payload.password ? payload.password : s.password,
                   };
+                  void upsertStaffInSupabase(updated);
+                  return updated;
                 })
               );
               showToast(`Akun staf ${payload.name} diperbarui`);
             }}
             onExtendMembership={(memberId) => {
+              const nextExpiry = formatShortDateId(addYears(new Date(), 1));
               setMembers((prev) =>
                 prev.map((m) =>
                   m.id === memberId
                     ? {
                         ...m,
-                        membershipExpiresAt: '21 Nov 2027',
+                        membershipExpiresAt: nextExpiry,
                         membershipStatus: 'aktif',
                       }
                     : m
                 )
               );
+              void syncMemberExpiryInSupabase(memberId, nextExpiry);
               showToast('Masa aktif keanggotaan diperpanjang +1 tahun');
             }}
           />
