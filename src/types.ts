@@ -153,6 +153,8 @@ export interface StaffAccount {
   outlet: OutletId | 'all';
   username: string;
   password: string;
+  phone?: string;
+  email?: string;
   active: boolean;
   transactionsToday: number;
   lastActive: string;

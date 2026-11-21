@@ -5,11 +5,16 @@ import {
   Calendar,
   Check,
   Coffee,
+  Copy,
   Download,
+  ExternalLink,
+  Gift,
   LogOut,
+  Mail,
   MessageSquare,
   Moon,
   Pencil,
+  Phone,
   Plus,
   RotateCcw,
   Search,
@@ -22,13 +27,20 @@ import {
   Zap,
 } from 'lucide-react';
 import { StampCard } from '../components/StampCard';
+import { normalizeWaPhone } from '../lib/supabaseDb';
 import {
-  DAILY_REVENUE_SERIES,
   INITIAL_LANDING_CONTENT,
   INITIAL_UI_CONFIG,
   OUTLETS as DEFAULT_OUTLETS,
   formatRupiah,
 } from '../data/mockData';
+import {
+  addDays,
+  formatDmLabel,
+  formatIsoDate,
+  formatSlashDateId,
+  parseShortDateToIso,
+} from '../lib/dateUtils';
 import {
   AdminTab,
   LandingContent,
@@ -64,13 +76,16 @@ interface AdminDashboardViewProps {
   onUpdateOutlets: (next: OutletInfo[]) => void;
   onUpdateMenuItems: (next: MenuItem[], message?: string) => void;
   onToggleWaTemplate: (id: string) => void;
-  onSendTestWa: (template: WAMessageTemplate) => void;
+  onSendTestWa: (template: WAMessageTemplate, recipientLabel?: string) => void;
+  onIssueBirthdayVoucher: (memberId: string) => Promise<void> | void;
   onToggleStaffActive: (id: string) => void;
   onAddStaff: (payload: {
     name: string;
     username: string;
     outlet: OutletId;
     password?: string;
+    phone?: string;
+    email?: string;
   }) => void;
   onUpdateStaff: (
     id: string,
@@ -79,6 +94,8 @@ interface AdminDashboardViewProps {
       username: string;
       outlet: OutletId | 'all';
       password?: string;
+      phone?: string;
+      email?: string;
     }
   ) => void;
   onExtendMembership: (memberId: string) => void;
@@ -128,6 +145,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onUpdateMenuItems,
   onToggleWaTemplate,
   onSendTestWa,
+  onIssueBirthdayVoucher,
   onToggleStaffActive,
   onAddStaff,
   onUpdateStaff,
@@ -211,12 +229,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [newStaffUsername, setNewStaffUsername] = useState('');
   const [newStaffOutlet, setNewStaffOutlet] = useState<OutletId>('pemuda');
   const [newStaffPassword, setNewStaffPassword] = useState('');
+  const [newStaffPhone, setNewStaffPhone] = useState('');
+  const [newStaffEmail, setNewStaffEmail] = useState('');
 
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
   const [editStaffName, setEditStaffName] = useState('');
   const [editStaffUsername, setEditStaffUsername] = useState('');
   const [editStaffOutlet, setEditStaffOutlet] = useState<OutletId | 'all'>('pemuda');
   const [editStaffPassword, setEditStaffPassword] = useState('');
+  const [editStaffPhone, setEditStaffPhone] = useState('');
+  const [editStaffEmail, setEditStaffEmail] = useState('');
+
+  // WhatsApp & Birthday test modal state
+  const [testingWaTpl, setTestingWaTpl] = useState<WAMessageTemplate | null>(null);
+  const [waTestMode, setWaTestMode] = useState<'member' | 'manual'>('member');
+  const [waTestMemberId, setWaTestMemberId] = useState<string>('');
+  const [waManualPhone, setWaManualPhone] = useState<string>('');
+  const [waTestMessage, setWaTestMessage] = useState<string>('');
+  const [waCopied, setWaCopied] = useState(false);
 
   // Menu keseluruhan & Tambahan menu cepat state
   const [menuSearch, setMenuSearch] = useState('');
@@ -255,81 +285,198 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     [members, inspectedMemberId]
   );
 
-  // Compute live KPIs anchored to the exact screenshot baseline for Pemuda 30 hari
-  const extraTx = Math.max(0, transactions.length - 10);
-  const extraPemudaRev = transactions
-    .slice(0, extraTx)
-    .filter((t) => t.outlet === 'pemuda')
-    .reduce((acc, t) => acc + t.grossAmount, 0);
-  const extraAwannRev = transactions
-    .slice(0, extraTx)
-    .filter((t) => t.outlet === 'awanncosta')
-    .reduce((acc, t) => acc + t.grossAmount, 0);
-  const extraPemudaDisc = transactions
-    .slice(0, extraTx)
-    .filter((t) => t.outlet === 'pemuda')
-    .reduce((acc, t) => acc + t.discountAmount, 0);
-  const extraAwannDisc = transactions
-    .slice(0, extraTx)
-    .filter((t) => t.outlet === 'awanncosta')
-    .reduce((acc, t) => acc + t.discountAmount, 0);
+  // Real date window anchored to today (or latest transaction date if ahead)
+  const dateRangeDisplay = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayIso = formatIsoDate(today);
+
+    let anchor = today;
+    for (const tx of transactions) {
+      if (tx.isoDate && tx.isoDate > formatIsoDate(anchor)) {
+        const parsed = new Date(`${tx.isoDate}T00:00:00`);
+        if (!Number.isNaN(parsed.getTime())) anchor = parsed;
+      }
+    }
+
+    const days = rangePreset === '7' ? 7 : rangePreset === '90' ? 90 : 30;
+    const start = addDays(anchor, -(days - 1));
+    const startIso = formatIsoDate(start);
+    const endIso = formatIsoDate(anchor);
+    const startSlash = formatSlashDateId(start);
+    const endSlash = formatSlashDateId(anchor);
+
+    return {
+      days,
+      startDate: start,
+      endDate: anchor,
+      todayIso,
+      start: startSlash,
+      end: endSlash,
+      startIso,
+      endIso,
+      iso: `${startIso} → ${endIso}`,
+    };
+  }, [rangePreset, transactions]);
+
+  // All transactions within the selected date window (unfiltered by outlet first, then filtered)
+  const periodAllOutletTransactions = useMemo(
+    () =>
+      transactions.filter(
+        (t) =>
+          t.isoDate >= dateRangeDisplay.startIso &&
+          t.isoDate <= dateRangeDisplay.endIso
+      ),
+    [transactions, dateRangeDisplay.startIso, dateRangeDisplay.endIso]
+  );
+
+  const periodTransactions = useMemo(
+    () =>
+      periodAllOutletTransactions.filter(
+        (t) => outletFilter === 'all' || t.outlet === outletFilter
+      ),
+    [periodAllOutletTransactions, outletFilter]
+  );
+
+  // Deduplicated voucher redemptions within date window (transactions + historical used vouchers not in transactions)
+  const periodVoucherRedemptions = useMemo(() => {
+    const list: {
+      memberId: string;
+      outlet: OutletId;
+      isoDate: string;
+      title: string;
+      amount: number;
+      typeHint?: string;
+    }[] = [];
+
+    const coveredKeys = new Set<string>();
+    for (const tx of periodAllOutletTransactions) {
+      if (!tx.voucherUsedTitle) continue;
+      list.push({
+        memberId: tx.memberId,
+        outlet: tx.outlet,
+        isoDate: tx.isoDate,
+        title: tx.voucherUsedTitle,
+        amount: tx.discountAmount,
+      });
+      coveredKeys.add(`${tx.memberId}|${tx.isoDate}|${tx.outlet}`);
+    }
+
+    for (const m of members) {
+      for (const v of m.vouchers) {
+        if (v.status !== 'used' || !v.usedAt || !v.usedOutlet) continue;
+        const usedIso = parseShortDateToIso(v.usedAt);
+        if (
+          !usedIso ||
+          usedIso < dateRangeDisplay.startIso ||
+          usedIso > dateRangeDisplay.endIso
+        ) {
+          continue;
+        }
+        const key = `${m.id}|${usedIso}|${v.usedOutlet}`;
+        if (coveredKeys.has(key)) continue;
+        list.push({
+          memberId: m.id,
+          outlet: v.usedOutlet,
+          isoDate: usedIso,
+          title: v.title,
+          amount: v.maxDiscountValue || 0,
+          typeHint: v.type,
+        });
+        coveredKeys.add(key);
+      }
+    }
+
+    return list;
+  }, [
+    periodAllOutletTransactions,
+    members,
+    dateRangeDisplay.startIso,
+    dateRangeDisplay.endIso,
+  ]);
+
+  // Issued vouchers within date window, attributed to outlet where earned/used
+  const periodIssuedVouchers = useMemo(() => {
+    const issued: {
+      memberId: string;
+      outlet: OutletId;
+      status: string;
+      issuedIso: string;
+    }[] = [];
+
+    for (const m of members) {
+      for (const v of m.vouchers) {
+        const issuedIso = parseShortDateToIso(v.issuedAt);
+        if (
+          !issuedIso ||
+          issuedIso < dateRangeDisplay.startIso ||
+          issuedIso > dateRangeDisplay.endIso
+        ) {
+          continue;
+        }
+        const stampTxOnDay = transactions.find(
+          (t) =>
+            t.memberId === m.id &&
+            t.isoDate === issuedIso &&
+            t.stampEarned
+        );
+        const attributedOutlet: OutletId =
+          stampTxOnDay?.outlet ||
+          v.usedOutlet ||
+          m.lastUsedOutlet ||
+          m.favoriteOutlet ||
+          'pemuda';
+
+        if (outletFilter === 'all' || attributedOutlet === outletFilter) {
+          issued.push({
+            memberId: m.id,
+            outlet: attributedOutlet,
+            status: v.status,
+            issuedIso,
+          });
+        }
+      }
+    }
+    return issued;
+  }, [
+    members,
+    transactions,
+    outletFilter,
+    dateRangeDisplay.startIso,
+    dateRangeDisplay.endIso,
+  ]);
 
   const metrics = useMemo(() => {
-    const scale = rangePreset === '7' ? 0.32 : rangePreset === '90' ? 2.75 : 1;
+    const activeMembers = new Set(periodTransactions.map((t) => t.memberId))
+      .size;
+    const txCount = periodTransactions.length;
+    const stampTx = periodTransactions.filter((t) => t.stampEarned).length;
 
-    const pemudaBase = {
-      activeMembers: 37,
-      txCount: 116,
-      stampTx: 83,
-      vouchersIssued: 24,
-      vouchersUsed: 17,
-      gross: 4535000 + extraPemudaRev,
-      discount: 135650 + extraPemudaDisc,
-    };
-
-    const awannBase = {
-      activeMembers: 29,
-      txCount: 98,
-      stampTx: 72,
-      vouchersIssued: 19,
-      vouchersUsed: 13,
-      gross: 3920000 + extraAwannRev,
-      discount: 112400 + extraAwannDisc,
-    };
-
-    const pick =
-      outletFilter === 'pemuda'
-        ? pemudaBase
-        : outletFilter === 'awanncosta'
-          ? awannBase
-          : {
-              activeMembers: 58,
-              txCount: pemudaBase.txCount + awannBase.txCount,
-              stampTx: pemudaBase.stampTx + awannBase.stampTx,
-              vouchersIssued:
-                pemudaBase.vouchersIssued + awannBase.vouchersIssued,
-              vouchersUsed: pemudaBase.vouchersUsed + awannBase.vouchersUsed,
-              gross: pemudaBase.gross + awannBase.gross,
-              discount: pemudaBase.discount + awannBase.discount,
-            };
-
-    const activeMembers = Math.max(
-      1,
-      Math.round(pick.activeMembers * (rangePreset === '7' ? 0.65 : rangePreset === '90' ? 1.35 : 1))
+    const filteredRedemptions = periodVoucherRedemptions.filter(
+      (r) => outletFilter === 'all' || r.outlet === outletFilter
     );
-    const txCount = Math.round(pick.txCount * scale) + extraTx;
-    const stampTx = Math.round(pick.stampTx * scale) + extraTx;
-    const vouchersIssued = Math.round(pick.vouchersIssued * scale);
-    const vouchersUsed = Math.round(pick.vouchersUsed * scale);
+    const vouchersIssued = periodIssuedVouchers.length;
+    const vouchersUsed = filteredRedemptions.length;
     const usageRate =
       vouchersIssued > 0
         ? ((vouchersUsed / vouchersIssued) * 100).toFixed(1).replace('.', ',')
-        : '0,0';
-    const gross = Math.round(pick.gross * scale);
-    const discount = Math.round(pick.discount * scale);
+        : vouchersUsed > 0
+          ? '100,0'
+          : '0,0';
+
+    const gross = periodTransactions.reduce(
+      (sum, t) => sum + t.grossAmount,
+      0
+    );
+    const discount = periodTransactions.reduce(
+      (sum, t) => sum + t.discountAmount,
+      0
+    );
     const net = Math.max(0, gross - discount);
     const discountPct =
-      gross > 0 ? ((discount / gross) * 100).toFixed(2).replace('.', ',') : '0,00';
+      gross > 0
+        ? ((discount / gross) * 100).toFixed(2).replace('.', ',')
+        : '0,00';
 
     return {
       activeMembers,
@@ -344,41 +491,56 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       discountPct,
     };
   }, [
+    periodTransactions,
+    periodVoucherRedemptions,
+    periodIssuedVouchers,
     outletFilter,
-    rangePreset,
-    extraTx,
-    extraPemudaRev,
-    extraAwannRev,
-    extraPemudaDisc,
-    extraAwannDisc,
   ]);
 
-  // Chart data points
+  // Real daily revenue chart points computed from transactions
   const chartPoints = useMemo(() => {
-    const slice =
-      rangePreset === '7'
-        ? DAILY_REVENUE_SERIES.slice(-7)
-        : DAILY_REVENUE_SERIES;
-    return slice.map((pt) => {
-      const val =
-        outletFilter === 'pemuda'
-          ? pt.pemudaRevenue
-          : outletFilter === 'awanncosta'
-            ? pt.awanncostaRevenue
-            : pt.pemudaRevenue + pt.awanncostaRevenue;
-      return {
-        label: pt.dateLabel,
-        iso: pt.isoDate,
-        value: val,
+    const dailyTotals = new Map<string, { revenue: number; txCount: number }>();
+    for (const tx of periodTransactions) {
+      const current = dailyTotals.get(tx.isoDate) || {
+        revenue: 0,
+        txCount: 0,
       };
-    });
-  }, [outletFilter, rangePreset]);
+      current.revenue += tx.netAmount;
+      current.txCount += 1;
+      dailyTotals.set(tx.isoDate, current);
+    }
 
-  const maxChartY = outletFilter === 'all' ? 800000 : 600000;
-  const yTicks =
-    outletFilter === 'all'
-      ? [0, 200000, 400000, 600000, 800000]
-      : [0, 150000, 300000, 450000, 600000];
+    const points: {
+      label: string;
+      iso: string;
+      value: number;
+      txCount: number;
+    }[] = [];
+    for (let i = 0; i < dateRangeDisplay.days; i++) {
+      const d = addDays(dateRangeDisplay.startDate, i);
+      const iso = formatIsoDate(d);
+      const stats = dailyTotals.get(iso);
+      points.push({
+        label: formatDmLabel(d),
+        iso,
+        value: stats?.revenue ?? 0,
+        txCount: stats?.txCount ?? 0,
+      });
+    }
+    return points;
+  }, [
+    periodTransactions,
+    dateRangeDisplay.days,
+    dateRangeDisplay.startDate,
+  ]);
+
+  const peakDailyRevenue = Math.max(0, ...chartPoints.map((pt) => pt.value));
+  const chartStep =
+    peakDailyRevenue <= 0
+      ? 25000
+      : Math.max(10000, Math.ceil(peakDailyRevenue / 4 / 10000) * 10000);
+  const maxChartY = chartStep * 4;
+  const yTicks = [0, chartStep, chartStep * 2, chartStep * 3, maxChartY];
 
   // Build smooth SVG path
   const svgW = 640;
@@ -419,91 +581,57 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       ? `${linePath} L ${coords[coords.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${coords[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z`
       : '';
 
-  const dateRangeDisplay =
-    rangePreset === '7'
-      ? {
-          start: '15/11/2026',
-          end: '21/11/2026',
-          startIso: '2026-11-15',
-          endIso: '2026-11-21',
-          iso: '2026-11-15 → 2026-11-21',
-        }
-      : rangePreset === '90'
-        ? {
-            start: '24/08/2026',
-            end: '21/11/2026',
-            startIso: '2026-08-24',
-            endIso: '2026-11-21',
-            iso: '2026-08-24 → 2026-11-21',
-          }
-        : {
-            start: '23/10/2026',
-            end: '21/11/2026',
-            startIso: '2026-10-23',
-            endIso: '2026-11-21',
-            iso: '2026-10-23 → 2026-11-21',
-          };
-
   const outletSubtitle =
     outletFilter === 'all'
       ? 'SEMUA OUTLET'
-      : outletFilter === 'pemuda'
-        ? 'RTRW PEMUDA'
-        : 'RTRW AWANNCOSTA';
+      : (
+          outlets.find((o) => o.id === outletFilter)?.name ||
+          (outletFilter === 'pemuda' ? 'RTRW Pemuda' : 'RTRW AWANNCOSTA')
+        ).toUpperCase();
 
-  // Per-outlet voucher claims strictly filtered by outletFilter
+  // Per-outlet voucher claims computed strictly from real redemptions in the selected period
   const claimRows = useMemo(() => {
-    const scale = rangePreset === '7' ? 0.35 : rangePreset === '90' ? 2.6 : 1;
-    const extraLiveTx = transactions.slice(0, extraTx);
+    const visibleOutlets =
+      outletFilter === 'all'
+        ? outlets
+        : outlets.filter((o) => o.id === outletFilter);
 
-    const buildRow = (outletId: OutletId) => {
-      const isPemuda = outletId === 'pemuda';
-      const base = isPemuda
-        ? {
-            t1Count: 14,
-            t1Amt: 51200,
-            t2Count: 7,
-            t2Amt: 33450,
-            freeCount: 2,
-            freeAmt: 51000,
-            bdayCount: 0,
-            bdayAmt: 0,
-          }
-        : {
-            t1Count: 11,
-            t1Amt: 41200,
-            t2Count: 5,
-            t2Amt: 26200,
-            freeCount: 1,
-            freeAmt: 25000,
-            bdayCount: 1,
-            bdayAmt: 20000,
-          };
+    return visibleOutlets.map((outletInfo) => {
+      let t1Count = 0;
+      let t1Amt = 0;
+      let t2Count = 0;
+      let t2Amt = 0;
+      let freeCount = 0;
+      let freeAmt = 0;
+      let bdayCount = 0;
+      let bdayAmt = 0;
 
-      let t1Count = Math.round(base.t1Count * scale);
-      let t1Amt = Math.round(base.t1Amt * scale);
-      let t2Count = Math.round(base.t2Count * scale);
-      let t2Amt = Math.round(base.t2Amt * scale);
-      let freeCount = Math.round(base.freeCount * scale);
-      let freeAmt = Math.round(base.freeAmt * scale);
-      let bdayCount = Math.round(base.bdayCount * scale);
-      let bdayAmt = Math.round(base.bdayAmt * scale);
-
-      for (const tx of extraLiveTx) {
-        if (tx.outlet !== outletId || !tx.voucherUsedTitle) continue;
-        const title = tx.voucherUsedTitle.toLowerCase();
-        if (title.includes('10%')) {
+      for (const r of periodVoucherRedemptions) {
+        if (r.outlet !== outletInfo.id) continue;
+        const title = r.title.toLowerCase();
+        if (
+          r.typeHint === 'discount_10' ||
+          title.includes('10%') ||
+          title === rules.milestone3Label.toLowerCase()
+        ) {
           t1Count += 1;
-          t1Amt += tx.discountAmount;
-        } else if (title.includes('15%')) {
+          t1Amt += r.amount;
+        } else if (
+          r.typeHint === 'discount_15' ||
+          title.includes('15%') ||
+          title === rules.milestone6Label.toLowerCase()
+        ) {
           t2Count += 1;
-          t2Amt += tx.discountAmount;
-        } else if (title.includes('ulang tahun')) {
+          t2Amt += r.amount;
+        } else if (
+          r.typeHint === 'birthday' ||
+          title.includes('ulang tahun')
+        ) {
           bdayCount += 1;
-          bdayAmt += tx.discountAmount;
+          bdayAmt += r.amount;
         } else {
           freeCount += 1;
-          freeAmt += tx.discountAmount;
+          freeAmt += r.amount;
         }
       }
 
@@ -511,9 +639,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const totalAmt = t1Amt + t2Amt + freeAmt + bdayAmt;
 
       return {
-        outletId,
-        shortName: isPemuda ? 'Pemuda' : 'AWANNCOSTA',
-        outletName: isPemuda ? 'RTRW Pemuda' : 'RTRW AWANNCOSTA',
+        outletId: outletInfo.id,
+        shortName: outletInfo.shortName,
+        outletName: outletInfo.name,
         t1Count,
         t1Amt,
         t2Count,
@@ -525,13 +653,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         totalCount,
         totalAmt,
       };
-    };
-
-    const visibleOutlets: OutletId[] =
-      outletFilter === 'all' ? ['pemuda', 'awanncosta'] : [outletFilter];
-
-    return visibleOutlets.map(buildRow);
-  }, [outletFilter, rangePreset, transactions, extraTx]);
+    });
+  }, [outletFilter, outlets, periodVoucherRedemptions, rules]);
 
   const handleExportClaimsCsv = () => {
     const header = [
@@ -682,10 +805,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       username: newStaffUsername.trim(),
       outlet: newStaffOutlet,
       password: newStaffPassword.trim() || undefined,
+      phone: newStaffPhone.trim() || undefined,
+      email: newStaffEmail.trim() || undefined,
     });
     setNewStaffName('');
     setNewStaffUsername('');
     setNewStaffPassword('');
+    setNewStaffPhone('');
+    setNewStaffEmail('');
     setShowAddStaff(false);
   };
 
@@ -695,6 +822,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setEditStaffUsername(acc.username);
     setEditStaffOutlet(acc.outlet);
     setEditStaffPassword('');
+    setEditStaffPhone(acc.phone || '');
+    setEditStaffEmail(acc.email || '');
   };
 
   const handleSaveEditStaff = (e: React.FormEvent) => {
@@ -705,9 +834,56 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       username: editStaffUsername.trim(),
       outlet: editStaffOutlet,
       password: editStaffPassword.trim() || undefined,
+      phone: editStaffPhone.trim() || undefined,
+      email: editStaffEmail.trim() || undefined,
     });
     setEditingStaffId(null);
     setEditStaffPassword('');
+  };
+
+  const renderWaMessageForMember = (
+    tpl: WAMessageTemplate,
+    member?: Member
+  ): string => {
+    const nama = member?.firstName || member?.name || 'Warga RTRW';
+    const kodeKartu = member?.serialCode || 'RTRW-2026';
+    const activeVoucher = member?.vouchers.find((v) => v.status === 'active');
+    const namaVoucher = activeVoucher?.title || 'Gratis 1 Minuman';
+    const tanggalAkhir = activeVoucher?.expiresAt || 'akhir bulan ini';
+    return tpl.messagePreview
+      .replace(/\{nama\}/g, nama)
+      .replace(/\{kode_kartu\}/g, kodeKartu)
+      .replace(/\{nama_voucher\}/g, namaVoucher)
+      .replace(/\{tanggal_akhir\}/g, tanggalAkhir);
+  };
+
+  const openWaTestModal = (tpl: WAMessageTemplate) => {
+    let defaultMember = members[0];
+    if (tpl.id === 'wa-bday') {
+      const currentMonthName = new Intl.DateTimeFormat('id-ID', {
+        month: 'long',
+      })
+        .format(new Date())
+        .toLowerCase();
+      defaultMember =
+        members.find((m) =>
+          (m.birthday || '').toLowerCase().includes(currentMonthName)
+        ) ||
+        members.find((m) => Boolean(m.birthday)) ||
+        members[0];
+    } else if (tpl.id === 'wa-almost-full') {
+      defaultMember = members.find((m) => m.stamps === 9) || members[0];
+    } else if (tpl.id === 'wa-voucher-expiry') {
+      defaultMember =
+        members.find((m) => m.vouchers.some((v) => v.status === 'active')) ||
+        members[0];
+    }
+    setTestingWaTpl(tpl);
+    setWaTestMode('member');
+    setWaTestMemberId(defaultMember?.id || '');
+    setWaManualPhone(defaultMember?.phone || '');
+    setWaTestMessage(renderWaMessageForMember(tpl, defaultMember));
+    setWaCopied(false);
   };
 
   // Menu management handlers
@@ -916,10 +1092,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             <div className="inline-flex items-center p-1 rounded-full bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10">
               {(
                 [
-                  { id: 'all', label: 'Semua' },
-                  { id: 'pemuda', label: 'Pemuda' },
-                  { id: 'awanncosta', label: 'AWANNCOSTA' },
-                ] as const
+                  { id: 'all' as const, label: 'Semua' },
+                  ...outlets.map((o) => ({ id: o.id, label: o.shortName })),
+                ]
               ).map((o) => (
                 <button
                   key={o.id}
@@ -1063,7 +1238,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   </h2>
                   <span className="font-mono-code text-[11px] text-[#646D78] dark:text-[#94A3B8]">
                     {hoveredIdx !== null && coords[hoveredIdx]
-                      ? `${coords[hoveredIdx].label}: ${formatRupiah(coords[hoveredIdx].value)}`
+                      ? `${coords[hoveredIdx].label}: ${formatRupiah(coords[hoveredIdx].value)} (${coords[hoveredIdx].txCount} tx)`
                       : dateRangeDisplay.iso}
                   </span>
                 </div>
@@ -1123,11 +1298,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       strokeLinecap="round"
                     />
 
-                    {/* X-Axis Labels (spaced evenly) */}
+                    {/* X-Axis Labels (spaced evenly across 7, 30, or 90 days) */}
                     {coords.map((pt, idx) => {
+                      const labelStep = Math.max(1, Math.ceil(coords.length / 9));
                       const showLabel =
                         coords.length <= 10 ||
-                        idx % 3 === 0 ||
+                        idx % labelStep === 0 ||
                         idx === coords.length - 1;
                       return (
                         <g key={pt.iso}>
@@ -1304,13 +1480,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             {/* Stacked Bar Chart Card */}
             {(() => {
               const rawMax = Math.max(
-                140000,
+                40000,
                 ...claimRows.map((r) => r.totalAmt)
               );
-              const step =
-                rawMax <= 140000
-                  ? 35000
-                  : Math.ceil(rawMax / 4 / 10000) * 10000;
+              const step = Math.max(
+                10000,
+                Math.ceil(rawMax / 4 / 10000) * 10000
+              );
               const yMax = step * 4;
               const ticks = [0, step, step * 2, step * 3, yMax];
 
@@ -1481,62 +1657,243 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </div>
         )}
 
-        {/* TAB 3: ANALISIS */}
+        {/* TAB 3: ANALISIS (100% dihitung dari data transaksi & member nyata) */}
         {activeTab === 'analisis' && (() => {
-          const isPemuda = outletFilter === 'pemuda';
-          const isAwann = outletFilter === 'awanncosta';
-          const repeatRate = isPemuda ? '71,4%' : isAwann ? '65,5%' : '68,9%';
-          const repeatDetail = isPemuda
-            ? '26 dari 37 anggota bertransaksi ≥2×'
-            : isAwann
-              ? '19 dari 29 anggota bertransaksi ≥2×'
-              : '40 dari 58 anggota bertransaksi ≥2×';
-          const avgCadence = isPemuda ? '4,8 hari' : isAwann ? '5,6 hari' : '5,2 hari';
+          // 1. Grouping transaksi per anggota untuk Tingkat Kunjungan Ulang & Jeda Kunjungan
+          const txByMember = new Map<string, Transaction[]>();
+          for (const tx of periodTransactions) {
+            const list = txByMember.get(tx.memberId) || [];
+            list.push(tx);
+            txByMember.set(tx.memberId, list);
+          }
 
-          const topMenus = isPemuda
-            ? [
-                { name: 'Kopi Susu Warga', cups: 48, pct: 34 },
-                { name: 'Americano Pemuda', cups: 31, pct: 22 },
-                { name: 'Matcha Oat Latte', cups: 24, pct: 17 },
-                { name: 'Flat White', cups: 19, pct: 14 },
-                { name: 'Butter Croissant', cups: 18, pct: 13 },
-              ]
-            : isAwann
-              ? [
-                  { name: 'Cold Brew POJ', cups: 41, pct: 35 },
-                  { name: 'Sea Salt Caramel Latte', cups: 29, pct: 25 },
-                  { name: 'Caffe Latte', cups: 21, pct: 18 },
-                  { name: 'Kopi Susu Warga', cups: 15, pct: 13 },
-                  { name: 'Almond Croissant', cups: 11, pct: 9 },
-                ]
-              : [
-                  { name: 'Kopi Susu Warga', cups: 63, pct: 28 },
-                  { name: 'Cold Brew POJ', cups: 49, pct: 22 },
-                  { name: 'Americano Pemuda', cups: 38, pct: 17 },
-                  { name: 'Sea Salt Caramel Latte', cups: 36, pct: 16 },
-                  { name: 'Matcha Oat Latte', cups: 35, pct: 17 },
-                ];
+          const transactingMembersCount = txByMember.size;
+          let repeatMembersCount = 0;
+          const allGapsDays: number[] = [];
+          const memberAvgGaps: number[] = [];
 
-          const cadenceBuckets = isPemuda
-            ? [
-                { label: '1–3 hari (Sangat rutin)', members: 14, pct: 38 },
-                { label: '4–7 hari (Mingguan)', members: 13, pct: 35 },
-                { label: '8–14 hari (Dua mingguan)', members: 7, pct: 19 },
-                { label: '> 14 hari (Jarang)', members: 3, pct: 8 },
-              ]
-            : isAwann
-              ? [
-                  { label: '1–3 hari (Sangat rutin)', members: 9, pct: 31 },
-                  { label: '4–7 hari (Mingguan)', members: 11, pct: 38 },
-                  { label: '8–14 hari (Dua mingguan)', members: 6, pct: 21 },
-                  { label: '> 14 hari (Jarang)', members: 3, pct: 10 },
-                ]
-              : [
-                  { label: '1–3 hari (Sangat rutin)', members: 21, pct: 36 },
-                  { label: '4–7 hari (Mingguan)', members: 21, pct: 36 },
-                  { label: '8–14 hari (Dua mingguan)', members: 11, pct: 19 },
-                  { label: '> 14 hari (Jarang)', members: 5, pct: 9 },
-                ];
+          for (const [, list] of txByMember.entries()) {
+            if (list.length < 2) continue;
+            repeatMembersCount += 1;
+
+            const sorted = [...list].sort((a, b) =>
+              `${a.isoDate} ${a.time}`.localeCompare(`${b.isoDate} ${b.time}`)
+            );
+            const memberGaps: number[] = [];
+            for (let i = 1; i < sorted.length; i++) {
+              const tPrev = new Date(
+                `${sorted[i - 1].isoDate}T${sorted[i - 1].time || '00:00'}:00`
+              ).getTime();
+              const tCurr = new Date(
+                `${sorted[i].isoDate}T${sorted[i].time || '00:00'}:00`
+              ).getTime();
+              const diffDays = Number.isNaN(tCurr - tPrev)
+                ? 0
+                : Math.max(0, (tCurr - tPrev) / (1000 * 60 * 60 * 24));
+              allGapsDays.push(diffDays);
+              memberGaps.push(diffDays);
+            }
+            if (memberGaps.length > 0) {
+              memberAvgGaps.push(
+                memberGaps.reduce((s, g) => s + g, 0) / memberGaps.length
+              );
+            }
+          }
+
+          const repeatRate =
+            transactingMembersCount > 0
+              ? `${((repeatMembersCount / transactingMembersCount) * 100)
+                  .toFixed(1)
+                  .replace('.', ',')}%`
+              : '0,0%';
+
+          const repeatDetail =
+            transactingMembersCount > 0
+              ? `${repeatMembersCount} dari ${transactingMembersCount} anggota bertransaksi ≥2×`
+              : 'Belum ada transaksi di periode ini';
+
+          const avgCadence =
+            allGapsDays.length > 0
+              ? `${(
+                  allGapsDays.reduce((s, g) => s + g, 0) / allGapsDays.length
+                )
+                  .toFixed(1)
+                  .replace('.', ',')} hari`
+              : '—';
+
+          // 2. Bucket jeda kunjungan antar pembelian
+          const bucketCounts = [0, 0, 0, 0];
+          for (const gap of memberAvgGaps) {
+            if (gap <= 3) bucketCounts[0] += 1;
+            else if (gap <= 7) bucketCounts[1] += 1;
+            else if (gap <= 14) bucketCounts[2] += 1;
+            else bucketCounts[3] += 1;
+          }
+          const totalCadenceMembers = memberAvgGaps.length;
+          const cadenceBuckets = [
+            {
+              label: '0–3 hari (Sangat rutin)',
+              members: bucketCounts[0],
+              pct:
+                totalCadenceMembers > 0
+                  ? Math.round((bucketCounts[0] / totalCadenceMembers) * 100)
+                  : 0,
+            },
+            {
+              label: '4–7 hari (Mingguan)',
+              members: bucketCounts[1],
+              pct:
+                totalCadenceMembers > 0
+                  ? Math.round((bucketCounts[1] / totalCadenceMembers) * 100)
+                  : 0,
+            },
+            {
+              label: '8–14 hari (Dua mingguan)',
+              members: bucketCounts[2],
+              pct:
+                totalCadenceMembers > 0
+                  ? Math.round((bucketCounts[2] / totalCadenceMembers) * 100)
+                  : 0,
+            },
+            {
+              label: '> 14 hari (Jarang)',
+              members: bucketCounts[3],
+              pct:
+                totalCadenceMembers > 0
+                  ? Math.round((bucketCounts[3] / totalCadenceMembers) * 100)
+                  : 0,
+            },
+          ];
+
+          // 3. Menu terlaris anggota
+          const itemCounts = new Map<string, number>();
+          let totalItemOrders = 0;
+          for (const tx of periodTransactions) {
+            for (const rawName of tx.items) {
+              const name = rawName.trim();
+              if (!name) continue;
+              itemCounts.set(name, (itemCounts.get(name) || 0) + 1);
+              totalItemOrders += 1;
+            }
+          }
+          const topMenus = [...itemCounts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([name, cups]) => ({
+              name,
+              cups,
+              pct:
+                totalItemOrders > 0
+                  ? Math.round((cups / totalItemOrders) * 100)
+                  : 0,
+            }));
+
+          // 4. Distribusi jam ramai transaksi
+          const hourBucketCounts = [0, 0, 0, 0];
+          for (const tx of periodTransactions) {
+            const hourStr = (tx.time || '').split(':')[0];
+            const hour = Number(hourStr);
+            if (Number.isNaN(hour) || hour < 11) hourBucketCounts[0] += 1;
+            else if (hour < 15) hourBucketCounts[1] += 1;
+            else if (hour < 19) hourBucketCounts[2] += 1;
+            else hourBucketCounts[3] += 1;
+          }
+          const totalPeriodTx = periodTransactions.length;
+          const busyHourSlots = [
+            {
+              label: 'Pagi (< 11:00)',
+              count: hourBucketCounts[0],
+              pct:
+                totalPeriodTx > 0
+                  ? Math.round((hourBucketCounts[0] / totalPeriodTx) * 100)
+                  : 0,
+            },
+            {
+              label: '11:00 – 14:59 (Siang)',
+              count: hourBucketCounts[1],
+              pct:
+                totalPeriodTx > 0
+                  ? Math.round((hourBucketCounts[1] / totalPeriodTx) * 100)
+                  : 0,
+            },
+            {
+              label: '15:00 – 18:59 (Sore & WFC)',
+              count: hourBucketCounts[2],
+              pct:
+                totalPeriodTx > 0
+                  ? Math.round((hourBucketCounts[2] / totalPeriodTx) * 100)
+                  : 0,
+            },
+            {
+              label: '19:00 – Tutup (Malam)',
+              count: hourBucketCounts[3],
+              pct:
+                totalPeriodTx > 0
+                  ? Math.round((hourBucketCounts[3] / totalPeriodTx) * 100)
+                  : 0,
+            },
+          ];
+
+          // 5. Retensi & penukaran hadiah nyata dari tabel vouchers & kartu selesai
+          const filteredMembersForOutlet =
+            outletFilter === 'all'
+              ? members
+              : members.filter(
+                  (m) =>
+                    m.favoriteOutlet === outletFilter ||
+                    m.lastUsedOutlet === outletFilter ||
+                    transactions.some(
+                      (t) => t.memberId === m.id && t.outlet === outletFilter
+                    )
+                );
+
+          const allScopedVouchers = filteredMembersForOutlet.flatMap(
+            (m) => m.vouchers
+          );
+
+          const countTierStats = (
+            typeKey: 'discount_10' | 'discount_15' | 'free_drink' | 'birthday'
+          ) => {
+            const matching = allScopedVouchers.filter(
+              (v) => v.type === typeKey
+            );
+            const issued = matching.length;
+            const usedFromVoucher = matching.filter(
+              (v) =>
+                v.status === 'used' &&
+                (outletFilter === 'all' ||
+                  !v.usedOutlet ||
+                  v.usedOutlet === outletFilter)
+            ).length;
+            const usedFromTx = periodVoucherRedemptions.filter((r) => {
+              if (outletFilter !== 'all' && r.outlet !== outletFilter) {
+                return false;
+              }
+              const title = r.title.toLowerCase();
+              if (typeKey === 'discount_10') return title.includes('10%');
+              if (typeKey === 'discount_15') return title.includes('15%');
+              if (typeKey === 'birthday') return title.includes('ulang tahun');
+              return (
+                !title.includes('10%') &&
+                !title.includes('15%') &&
+                !title.includes('ulang tahun')
+              );
+            }).length;
+
+            const used = Math.max(usedFromVoucher, usedFromTx);
+            const pct =
+              issued > 0 ? Math.min(100, Math.round((used / issued) * 100)) : 0;
+            return { issued, used, pct };
+          };
+
+          const tier3 = countTierStats('discount_10');
+          const tier6 = countTierStats('discount_15');
+          const tier10 = countTierStats('free_drink');
+          const tierBday = countTierStats('birthday');
+          const totalCompletedCards = filteredMembersForOutlet.reduce(
+            (sum, m) => sum + m.completedCards,
+            0
+          );
 
           return (
             <div className="space-y-5">
@@ -1560,7 +1917,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     {avgCadence}
                   </p>
                   <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
-                    jarak antar pembelian anggota aktif
+                    {allGapsDays.length > 0
+                      ? 'jarak antar pembelian anggota aktif'
+                      : 'Butuh ≥2 transaksi dari anggota sama'}
                   </p>
                 </div>
 
@@ -1569,10 +1928,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     MENU TERLARIS ANGGOTA
                   </p>
                   <p className="font-serif-display text-2xl font-normal truncate">
-                    {topMenus[0].name}
+                    {topMenus[0]?.name || 'Belum ada data'}
                   </p>
                   <p className="text-xs text-[#646D78] dark:text-[#94A3B8] tabular-nums">
-                    {topMenus[0].cups} cangkir · {topMenus[0].pct}% dari pesanan
+                    {topMenus[0]
+                      ? `${topMenus[0].cups}× dipesan · ${topMenus[0].pct}% dari item`
+                      : '0 item dipesan di periode ini'}
                   </p>
                 </div>
               </div>
@@ -1589,24 +1950,30 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       Seberapa cepat anggota kembali membeli setelah kunjungan sebelumnya.
                     </p>
                   </div>
-                  <div className="space-y-3 pt-1">
-                    {cadenceBuckets.map((b) => (
-                      <div key={b.label} className="space-y-1.5 text-xs">
-                        <div className="flex justify-between">
-                          <span>{b.label}</span>
-                          <span className="font-mono-code tabular-nums">
-                            {b.members} anggota ({b.pct}%)
-                          </span>
+                  {totalCadenceMembers === 0 ? (
+                    <p className="text-xs text-[#646D78] dark:text-[#94A3B8] py-4">
+                      Belum ada anggota dengan ≥2 transaksi pada rentang waktu ini.
+                    </p>
+                  ) : (
+                    <div className="space-y-3 pt-1">
+                      {cadenceBuckets.map((b) => (
+                        <div key={b.label} className="space-y-1.5 text-xs">
+                          <div className="flex justify-between">
+                            <span>{b.label}</span>
+                            <span className="font-mono-code tabular-nums">
+                              {b.members} anggota ({b.pct}%)
+                            </span>
+                          </div>
+                          <div className="h-2 rounded-full bg-[#EFECE5] dark:bg-white/10 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-[#16202C] dark:bg-[#F4F1EA]"
+                              style={{ width: `${b.pct}%` }}
+                            />
+                          </div>
                         </div>
-                        <div className="h-2 rounded-full bg-[#EFECE5] dark:bg-white/10 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-[#16202C] dark:bg-[#F4F1EA]"
-                            style={{ width: `${Math.min(100, b.pct * 2.1)}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Menu Terlaris */}
@@ -1619,29 +1986,35 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       Peringkat minuman &amp; pendamping yang paling sering dipesan warga.
                     </p>
                   </div>
-                  <div className="divide-y divide-[#EFECE5] dark:divide-white/10 text-xs">
-                    {topMenus.map((item, idx) => (
-                      <div
-                        key={item.name}
-                        className="py-2.5 flex items-center justify-between gap-4"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="font-mono-code text-[11px] font-semibold text-[#8A929D] w-5 tabular-nums">
-                            {String(idx + 1).padStart(2, '0')}
-                          </span>
-                          <span className="font-medium text-sm truncate">
-                            {item.name}
-                          </span>
+                  {topMenus.length === 0 ? (
+                    <p className="text-xs text-[#646D78] dark:text-[#94A3B8] py-4">
+                      Belum ada menu tercatat pada periode ini.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-[#EFECE5] dark:divide-white/10 text-xs">
+                      {topMenus.map((item, idx) => (
+                        <div
+                          key={item.name}
+                          className="py-2.5 flex items-center justify-between gap-4"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="font-mono-code text-[11px] font-semibold text-[#8A929D] w-5 tabular-nums">
+                              {String(idx + 1).padStart(2, '0')}
+                            </span>
+                            <span className="font-medium text-sm truncate">
+                              {item.name}
+                            </span>
+                          </div>
+                          <div className="text-right shrink-0 font-mono-code tabular-nums">
+                            <span className="font-semibold">{item.cups}×</span>
+                            <span className="text-[#646D78] dark:text-[#94A3B8] ml-2">
+                              ({item.pct}%)
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-right shrink-0 font-mono-code tabular-nums">
-                          <span className="font-semibold">{item.cups}×</span>
-                          <span className="text-[#646D78] dark:text-[#94A3B8] ml-2">
-                            ({item.pct}%)
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Jam Ramai */}
@@ -1655,12 +2028,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     </p>
                   </div>
                   <div className="space-y-3 pt-1">
-                    {[
-                      { label: '07:00 – 10:00 (Kopi Pagi)', count: 29, pct: 25 },
-                      { label: '11:00 – 14:00 (Makan Siang)', count: 24, pct: 21 },
-                      { label: '15:00 – 18:00 (Sore & WFC)', count: 44, pct: 38 },
-                      { label: '19:00 – 22:30 (Malam)', count: 19, pct: 16 },
-                    ].map((slot) => (
+                    {busyHourSlots.map((slot) => (
                       <div key={slot.label} className="space-y-1.5 text-xs">
                         <div className="flex justify-between">
                           <span>{slot.label}</span>
@@ -1671,7 +2039,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <div className="h-2 rounded-full bg-[#EFECE5] dark:bg-white/10 overflow-hidden">
                           <div
                             className="h-full rounded-full bg-[#16202C] dark:bg-[#F4F1EA]"
-                            style={{ width: `${slot.pct * 2}%` }}
+                            style={{ width: `${slot.pct}%` }}
                           />
                         </div>
                       </div>
@@ -1693,23 +2061,23 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     {[
                       {
                         tier: `Stempel 03 · ${rules.milestone3Label}`,
-                        rate: '78% terpakai dalam 7 hari',
-                        count: '14 klaim',
+                        rate: `${tier3.issued} voucher terbit · ${tier3.pct}% sudah terpakai`,
+                        count: `${tier3.used} klaim`,
                       },
                       {
                         tier: `Stempel 06 · ${rules.milestone6Label}`,
-                        rate: '69% terpakai dalam 10 hari',
-                        count: '9 klaim',
+                        rate: `${tier6.issued} voucher terbit · ${tier6.pct}% sudah terpakai`,
+                        count: `${tier6.used} klaim`,
                       },
                       {
                         tier: `Stempel 10 · ${rules.milestone10Label}`,
-                        rate: '92% mulai kartu baru setelah klaim',
-                        count: '7 kartu penuh',
+                        rate: `${tier10.issued} voucher terbit · ${tier10.used} sudah ditukarkan`,
+                        count: `${totalCompletedCards} kartu penuh`,
                       },
                       {
                         tier: 'Hadiah Ulang Tahun',
-                        rate: 'Rata-rata membawa +1 teman berkunjung',
-                        count: '4 klaim bulan ini',
+                        rate: `${tierBday.issued} voucher ulang tahun terbit`,
+                        count: `${tierBday.used} klaim`,
                       },
                     ].map((row) => (
                       <div
@@ -2940,70 +3308,309 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         })()}
 
         {/* TAB 6: PESAN WA */}
-        {activeTab === 'pesan-wa' && (
-          <div className="space-y-4">
-            <div>
-              <h3 className="font-serif-display text-2xl">
-                Otomasi pesan WhatsApp
-              </h3>
-              <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
-                Notifikasi hangat otomatis saat ulang tahun atau mendekati hadiah
-                stempel.
-              </p>
-            </div>
+        {activeTab === 'pesan-wa' && (() => {
+          const currentMonthName = new Intl.DateTimeFormat('id-ID', {
+            month: 'long',
+          })
+            .format(new Date())
+            .toLowerCase();
+          const birthdayMonthMembers = members.filter((m) =>
+            (m.birthday || '').toLowerCase().includes(currentMonthName)
+          );
+          const birthdayRecordedMembers = members.filter((m) =>
+            Boolean(m.birthday)
+          );
+          const almostFullMembers = members.filter((m) => m.stamps === 9);
+          const activeVoucherMembers = members.filter((m) =>
+            m.vouchers.some((v) => v.status === 'active')
+          );
 
-            <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-4">
-              {waTemplates.map((tpl) => (
+          const liveCountByTplId: Record<string, string> = {
+            'wa-bday': `${birthdayMonthMembers.length} ulang tahun bulan ini (${birthdayRecordedMembers.length} tercatat)`,
+            'wa-almost-full': `${almostFullMembers.length} anggota di stempel ke-9`,
+            'wa-voucher-expiry': `${activeVoucherMembers.length} anggota punya voucher aktif`,
+          };
+
+          const selectedWaMember = members.find((m) => m.id === waTestMemberId);
+          const targetRawPhone =
+            waTestMode === 'member'
+              ? selectedWaMember?.phone || ''
+              : waManualPhone;
+          const waNormalizedDigits = normalizeWaPhone(targetRawPhone);
+          const waDeepLink = waNormalizedDigits
+            ? `https://wa.me/${waNormalizedDigits}?text=${encodeURIComponent(
+                waTestMessage
+              )}`
+            : '';
+          const selectedHasActiveBdayVoucher = Boolean(
+            selectedWaMember?.vouchers.some(
+              (v) => v.type === 'birthday' && v.status === 'active'
+            )
+          );
+
+          return (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-serif-display text-2xl">
+                    Otomasi &amp; Uji Kirim WhatsApp
+                  </h3>
+                  <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
+                    Notifikasi hangat saat ulang tahun atau mendekati hadiah stempel.
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-[#FAF8F4] dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-4 text-xs text-[#55606E] dark:text-[#CBD5E1] space-y-1.5">
+                <p className="font-semibold text-[#16202C] dark:text-white">
+                  Uji Coba Pakai Apa?
+                </p>
+                <p className="leading-relaxed">
+                  <strong>1) Uji Coba Langsung (Gratis, siap pakai):</strong> Klik <strong>Uji Kirim</strong> untuk memilih anggota atau nomor uji coba, merender pesan otomatis, lalu membukanya langsung lewat <strong>WhatsApp Click-to-Chat (wa.me)</strong> di WhatsApp Web/HP. Untuk template ulang tahun, Anda juga bisa langsung menerbitkan Voucher Ulang Tahun nyata ke akun anggota.
+                </p>
+                <p className="leading-relaxed">
+                  <strong>2) Kirim Otomatis Tanpa Klik Manual:</strong> Untuk blast terjadwal tiap tanggal 1 / H-5 di latar belakang, hubungkan ke <strong>WhatsApp Gateway API</strong> (seperti <strong>Fonnte</strong>, <strong>Wablas</strong>, atau <strong>Meta WhatsApp Cloud API</strong>) via server/Edge Function.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-4">
+                {waTemplates.map((tpl) => (
+                  <div
+                    key={tpl.id}
+                    className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 flex flex-col justify-between gap-4"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="w-4 h-4 text-[#646D78]" />
+                          <h4 className="font-medium text-sm">{tpl.title}</h4>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onToggleWaTemplate(tpl.id)}
+                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider cursor-pointer ${
+                            tpl.enabled
+                              ? 'bg-[#16202C] text-white dark:bg-[#F4F1EA] dark:text-[#16202C]'
+                              : 'bg-[#EFECE5] text-[#646D78] dark:bg-white/10 dark:text-[#94A3B8]'
+                          }`}
+                        >
+                          {tpl.enabled ? 'Aktif' : 'Jeda'}
+                        </button>
+                      </div>
+
+                      <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                        {tpl.trigger}
+                      </p>
+
+                      <div className="text-[11px] font-medium text-[#16202C] dark:text-[#E2E8F0]">
+                        Target saat ini: {liveCountByTplId[tpl.id] || `${tpl.audienceCount} anggota`}
+                      </div>
+
+                      <div className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] p-3 text-xs leading-relaxed text-[#394452] dark:text-[#CBD5E1]">
+                        “{tpl.messagePreview}”
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-[#EFECE5] dark:border-white/10 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                        {tpl.lastSent}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => openWaTestModal(tpl)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#DED9CF] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
+                      >
+                        <Send className="w-3 h-3" />
+                        <span>Uji Kirim</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Modal Uji Kirim WhatsApp & Notifikasi Ulang Tahun */}
+              {testingWaTpl && (
                 <div
-                  key={tpl.id}
-                  className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 flex flex-col justify-between gap-4"
+                  className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
+                  onClick={() => setTestingWaTpl(null)}
                 >
-                  <div className="space-y-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-[#646D78]" />
-                        <h4 className="font-medium text-sm">{tpl.title}</h4>
+                  <div
+                    className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                          UJI KIRIM WHATSAPP (WA.ME)
+                        </p>
+                        <h4 className="font-serif-display text-2xl mt-0.5">
+                          {testingWaTpl.title}
+                        </h4>
                       </div>
                       <button
                         type="button"
-                        onClick={() => onToggleWaTemplate(tpl.id)}
-                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider cursor-pointer ${
-                          tpl.enabled
-                            ? 'bg-[#16202C] text-white dark:bg-[#F4F1EA] dark:text-[#16202C]'
-                            : 'bg-[#EFECE5] text-[#646D78] dark:bg-white/10 dark:text-[#94A3B8]'
-                        }`}
+                        onClick={() => setTestingWaTpl(null)}
+                        className="p-1.5 rounded-lg text-[#646D78] hover:text-[#16202C] dark:hover:text-white cursor-pointer"
                       >
-                        {tpl.enabled ? 'Aktif' : 'Jeda'}
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
 
-                    <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
-                      {tpl.trigger}
-                    </p>
+                    <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-[#EFECE5] dark:bg-[#0E1319]">
+                      <button
+                        type="button"
+                        onClick={() => setWaTestMode('member')}
+                        className={`py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                          waTestMode === 'member'
+                            ? 'bg-white dark:bg-[#1E293B] text-[#16202C] dark:text-white shadow-xs'
+                            : 'text-[#646D78] dark:text-[#94A3B8]'
+                        }`}
+                      >
+                        Pilih Anggota
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWaTestMode('manual')}
+                        className={`py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                          waTestMode === 'manual'
+                            ? 'bg-white dark:bg-[#1E293B] text-[#16202C] dark:text-white shadow-xs'
+                            : 'text-[#646D78] dark:text-[#94A3B8]'
+                        }`}
+                      >
+                        Nomor Uji Coba Manual
+                      </button>
+                    </div>
 
-                    <div className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] p-3 text-xs leading-relaxed text-[#394452] dark:text-[#CBD5E1]">
-                      “{tpl.messagePreview}”
+                    {waTestMode === 'member' ? (
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium">
+                          Anggota Tujuan
+                        </label>
+                        <select
+                          value={waTestMemberId}
+                          onChange={(e) => {
+                            const nextId = e.target.value;
+                            setWaTestMemberId(nextId);
+                            const m = members.find((item) => item.id === nextId);
+                            setWaTestMessage(
+                              renderWaMessageForMember(testingWaTpl, m)
+                            );
+                          }}
+                          className="w-full px-3 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                        >
+                          {members.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} · {m.phone}
+                              {m.birthday ? ` · Ultah: ${m.birthday}` : ''} ·{' '}
+                              {m.stamps}/10 stempel
+                            </option>
+                          ))}
+                        </select>
+
+                        {testingWaTpl.id === 'wa-bday' && selectedWaMember && (
+                          <div className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-3 flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-[11px]">
+                              <p className="font-medium text-[#16202C] dark:text-white">
+                                Status Voucher Ulang Tahun:{' '}
+                                {selectedHasActiveBdayVoucher
+                                  ? 'Sudah Aktif'
+                                  : 'Belum Diterbitkan'}
+                              </p>
+                              <p className="text-[#646D78] dark:text-[#94A3B8]">
+                                Terbitkan ke akun agar langsung muncul di aplikasi anggota.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={selectedHasActiveBdayVoucher}
+                              onClick={() =>
+                                onIssueBirthdayVoucher(selectedWaMember.id)
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-[11px] font-semibold disabled:opacity-50 cursor-pointer"
+                            >
+                              <Gift className="w-3.5 h-3.5" />
+                              <span>
+                                {selectedHasActiveBdayVoucher
+                                  ? 'Sudah Aktif'
+                                  : 'Terbitkan Voucher Ultah'}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-xs font-medium mb-1">
+                          Nomor WhatsApp Uji Coba (cth: nomor HP Anda)
+                        </label>
+                        <input
+                          type="text"
+                          value={waManualPhone}
+                          onChange={(e) => setWaManualPhone(e.target.value)}
+                          placeholder="0812xxxxxxxx"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs font-mono-code"
+                        />
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-medium mb-1">
+                        Isi Pesan (dapat diedit sebelum dikirim)
+                      </label>
+                      <textarea
+                        rows={4}
+                        value={waTestMessage}
+                        onChange={(e) => setWaTestMessage(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs leading-relaxed"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#EFECE5] dark:border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (navigator.clipboard) {
+                            void navigator.clipboard.writeText(waTestMessage);
+                            setWaCopied(true);
+                            setTimeout(() => setWaCopied(false), 1800);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-[#DED9CF] dark:border-white/15 text-xs font-medium cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>{waCopied ? 'Tersalin' : 'Salin Pesan'}</span>
+                      </button>
+
+                      {waDeepLink ? (
+                        <a
+                          href={waDeepLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() =>
+                            onSendTestWa(
+                              testingWaTpl,
+                              waTestMode === 'member'
+                                ? selectedWaMember?.name || targetRawPhone
+                                : targetRawPhone
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Buka &amp; Kirim di WhatsApp</span>
+                        </a>
+                      ) : (
+                        <span className="text-[11px] text-red-600 dark:text-red-400">
+                          Masukkan nomor WhatsApp tujuan terlebih dahulu.
+                        </span>
+                      )}
                     </div>
                   </div>
-
-                  <div className="pt-3 border-t border-[#EFECE5] dark:border-white/10 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
-                      {tpl.lastSent}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onSendTestWa(tpl)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#DED9CF] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
-                    >
-                      <Send className="w-3 h-3" />
-                      <span>Uji Kirim</span>
-                    </button>
-                  </div>
                 </div>
-              ))}
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* TAB 8: ATURAN PROGRAM */}
         {activeTab === 'aturan' && (
@@ -4249,7 +4856,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             {showAddStaff && (
               <form
                 onSubmit={handleCreateStaff}
-                className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 grid grid-cols-1 @3xl:grid-cols-5 gap-3 items-end"
+                className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 grid grid-cols-1 @3xl:grid-cols-3 gap-3 items-end"
               >
                 <div>
                   <label className="block text-xs font-medium mb-1">Nama</label>
@@ -4288,23 +4895,49 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium mb-1">
-                    Kata sandi (opsional)
+                    No. HP / WhatsApp (untuk reset sandi)
                   </label>
                   <input
-                    type="password"
-                    value={newStaffPassword}
-                    onChange={(e) => setNewStaffPassword(e.target.value)}
-                    placeholder="Kosongkan = bebas"
+                    type="text"
+                    value={newStaffPhone}
+                    onChange={(e) => setNewStaffPhone(e.target.value)}
+                    placeholder="0812xxxxxxxx"
                     className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
                   />
                 </div>
-                <button
-                  type="submit"
-                  className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Simpan Akun</span>
-                </button>
+                <div>
+                  <label className="block text-xs font-medium mb-1">
+                    Email Staf (untuk reset sandi)
+                  </label>
+                  <input
+                    type="email"
+                    value={newStaffEmail}
+                    onChange={(e) => setNewStaffEmail(e.target.value)}
+                    placeholder="bima@rtrw.id"
+                    className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                  />
+                </div>
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium mb-1">
+                      Kata sandi (opsional)
+                    </label>
+                    <input
+                      type="password"
+                      value={newStaffPassword}
+                      onChange={(e) => setNewStaffPassword(e.target.value)}
+                      placeholder="Kosongkan = bebas"
+                      className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer whitespace-nowrap"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Simpan</span>
+                  </button>
+                </div>
               </form>
             )}
 
@@ -4338,6 +4971,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
                           {acc.roleLabel} · Aktif terakhir: {acc.lastActive}
                         </p>
+                        {(acc.phone || acc.email) && (
+                          <div className="flex flex-wrap items-center gap-3 mt-1 text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                            {acc.phone && (
+                              <span className="inline-flex items-center gap-1">
+                                <Phone className="w-3 h-3" />
+                                {acc.phone}
+                              </span>
+                            )}
+                            {acc.email && (
+                              <span className="inline-flex items-center gap-1">
+                                <Mail className="w-3 h-3" />
+                                {acc.email}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2.5">
@@ -4375,7 +5024,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     {isEditing && (
                       <form
                         onSubmit={handleSaveEditStaff}
-                        className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-4 grid grid-cols-1 @3xl:grid-cols-5 gap-3 items-end"
+                        className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-4 grid grid-cols-1 @3xl:grid-cols-3 gap-3 items-end"
                       >
                         <div>
                           <label className="block text-[11px] font-medium mb-1">
@@ -4422,20 +5071,44 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         </div>
                         <div>
                           <label className="block text-[11px] font-medium mb-1">
-                            Kata sandi baru
+                            No. HP / WhatsApp
                           </label>
                           <input
-                            type="password"
-                            value={editStaffPassword}
-                            onChange={(e) => setEditStaffPassword(e.target.value)}
-                            placeholder="Kosongkan jika tetap"
+                            type="text"
+                            value={editStaffPhone}
+                            onChange={(e) => setEditStaffPhone(e.target.value)}
+                            placeholder="0812xxxxxxxx"
                             className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs"
                           />
                         </div>
-                        <div className="flex gap-2">
+                        <div>
+                          <label className="block text-[11px] font-medium mb-1">
+                            Email Staf
+                          </label>
+                          <input
+                            type="email"
+                            value={editStaffEmail}
+                            onChange={(e) => setEditStaffEmail(e.target.value)}
+                            placeholder="staf@rtrw.id"
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs"
+                          />
+                        </div>
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <label className="block text-[11px] font-medium mb-1">
+                              Kata sandi baru
+                            </label>
+                            <input
+                              type="password"
+                              value={editStaffPassword}
+                              onChange={(e) => setEditStaffPassword(e.target.value)}
+                              placeholder="Kosongkan jika tetap"
+                              className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs"
+                            />
+                          </div>
                           <button
                             type="submit"
-                            className="flex-1 py-2 px-3 rounded-lg bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
+                            className="py-2 px-3 rounded-lg bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
                           >
                             Simpan
                           </button>

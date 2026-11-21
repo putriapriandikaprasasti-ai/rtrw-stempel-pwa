@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS public.staff_accounts (
   outlet TEXT NOT NULL DEFAULT 'pemuda' CHECK (outlet IN ('pemuda', 'awanncosta', 'all')),
   username TEXT NOT NULL UNIQUE,
   password TEXT NOT NULL DEFAULT '••••••',
+  phone TEXT,
+  email TEXT,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   transactions_today INTEGER NOT NULL DEFAULT 0 CHECK (transactions_today >= 0),
   last_active TEXT NOT NULL DEFAULT 'Baru dibuat',
@@ -153,7 +155,12 @@ CREATE TABLE IF NOT EXISTS public.staff_accounts (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE public.staff_accounts ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.staff_accounts ADD COLUMN IF NOT EXISTS email TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_staff_username ON public.staff_accounts (username);
+CREATE INDEX IF NOT EXISTS idx_staff_phone ON public.staff_accounts (phone);
+CREATE INDEX IF NOT EXISTS idx_staff_email ON public.staff_accounts (email);
 
 DROP TRIGGER IF EXISTS trg_staff_accounts_updated_at ON public.staff_accounts;
 CREATE TRIGGER trg_staff_accounts_updated_at
@@ -500,14 +507,16 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 -- Akun Staf & Admin
-INSERT INTO public.staff_accounts (id, name, role, role_label, outlet, username, password, active, transactions_today, last_active)
+INSERT INTO public.staff_accounts (id, name, role, role_label, outlet, username, password, phone, email, active, transactions_today, last_active)
 VALUES
-  ('stf-dimas', 'Dimas', 'kasir', 'Kasir Pemuda', 'pemuda', 'dimas.pemuda', '••••••', TRUE, 14, 'Hari ini, 16:42'),
-  ('stf-sinta', 'Sinta', 'kasir', 'Kasir AWANNCOSTA', 'awanncosta', 'sinta.pojo', '••••••', TRUE, 11, 'Hari ini, 19:08'),
-  ('stf-raka', 'Raka', 'kasir', 'Kasir Pemuda (Shift Pagi)', 'pemuda', 'raka.pemuda', '••••••', TRUE, 9, 'Kemarin, 14:20'),
-  ('stf-admin-pemuda', 'Admin RTRW Pemuda', 'admin_outlet', 'Admin Outlet · RTRW Pemuda', 'pemuda', 'admin.pemuda', '••••••', TRUE, 0, 'Hari ini, 12:14'),
-  ('stf-admin-pusat', 'Admin Pusat RTRW', 'admin_pusat', 'Admin Pusat · Semua Outlet', 'all', 'admin.pusat', '••••••', TRUE, 0, 'Hari ini, 11:05')
-ON CONFLICT (id) DO NOTHING;
+  ('stf-dimas', 'Dimas', 'kasir', 'Kasir Pemuda', 'pemuda', 'dimas.pemuda', '••••••', '081228101001', 'dimas.pemuda@rtrw.id', TRUE, 14, 'Hari ini, 16:42'),
+  ('stf-sinta', 'Sinta', 'kasir', 'Kasir AWANNCOSTA', 'awanncosta', 'sinta.pojo', '••••••', '081228101002', 'sinta.pojo@rtrw.id', TRUE, 11, 'Hari ini, 19:08'),
+  ('stf-raka', 'Raka', 'kasir', 'Kasir Pemuda (Shift Pagi)', 'pemuda', 'raka.pemuda', '••••••', '081228101003', 'raka.pemuda@rtrw.id', TRUE, 9, 'Kemarin, 14:20'),
+  ('stf-admin-pemuda', 'Admin RTRW Pemuda', 'admin_outlet', 'Admin Outlet · RTRW Pemuda', 'pemuda', 'admin.pemuda', '••••••', '081228101004', 'admin.pemuda@rtrw.id', TRUE, 0, 'Hari ini, 12:14'),
+  ('stf-admin-pusat', 'Admin Pusat RTRW', 'admin_pusat', 'Admin Pusat · Semua Outlet', 'all', 'admin.pusat', '••••••', '081228101000', 'admin.pusat@rtrw.id', TRUE, 0, 'Hari ini, 11:05')
+ON CONFLICT (id) DO UPDATE SET
+  phone = COALESCE(public.staff_accounts.phone, EXCLUDED.phone),
+  email = COALESCE(public.staff_accounts.email, EXCLUDED.email);
 
 -- Daftar Menu Keseluruhan & Menu Cepat
 INSERT INTO public.menu_items (id, name, category, price, outlets, is_quick_menu, sort_order, active, description)
@@ -613,3 +622,34 @@ JOIN public.stamp_cards sc
 WHERE NOT EXISTS (
   SELECT 1 FROM public.stamp_history sh WHERE sh.member_id = v.member_id
 );
+
+-- ============================================================================
+-- 17. SUPABASE REALTIME PUBLICATION UNTUK SINKRONISASI OTOMATIS KARTU STEMPEL
+-- ============================================================================
+ALTER TABLE public.stamp_cards REPLICA IDENTITY FULL;
+ALTER TABLE public.members REPLICA IDENTITY FULL;
+ALTER TABLE public.vouchers REPLICA IDENTITY FULL;
+
+DO $$
+DECLARE
+  rt_tbl TEXT;
+  rt_tables TEXT[] := ARRAY[
+    'stamp_cards',
+    'members',
+    'vouchers',
+    'transactions',
+    'stamp_history'
+  ];
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    FOREACH rt_tbl IN ARRAY rt_tables LOOP
+      BEGIN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I;', rt_tbl);
+      EXCEPTION
+        WHEN duplicate_object THEN
+          NULL;
+      END;
+    END LOOP;
+  END IF;
+END $$;
+

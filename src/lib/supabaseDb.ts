@@ -322,6 +322,8 @@ export async function loadInitialDataFromSupabase(): Promise<LoadedSupabaseData 
       outlet: s.outlet,
       username: s.username,
       password: s.password,
+      phone: s.phone ?? undefined,
+      email: s.email ?? undefined,
       active: Boolean(s.active),
       transactionsToday: s.transactions_today ?? 0,
       lastActive: s.last_active,
@@ -602,9 +604,30 @@ export async function recordTransactionInSupabase(params: {
     }
   }
 
+  // 4. Sinkronkan ringkasan saldo member ke tabel members lebih dulu agar siap saat event Realtime stamp_cards tiba
+  const { error: memberUpdateErr } = await supabase
+    .from('members')
+    .update({
+      card_number: updatedMember.cardNumber,
+      stamps: updatedMember.stamps,
+      total_cups_all_time: updatedMember.totalCupsAllTime,
+      total_spent_all_time: updatedMember.totalSpentAllTime,
+      completed_cards: updatedMember.completedCards,
+      last_used_at: updatedMember.lastUsedAt,
+      last_used_outlet: updatedMember.lastUsedOutlet,
+    })
+    .eq('id', updatedMember.id);
+
+  if (memberUpdateErr) {
+    console.error(
+      '[Supabase] Gagal memperbarui data member:',
+      memberUpdateErr
+    );
+  }
+
   let nextActiveCardId = activeCardId;
 
-  // 4. Perbarui / buat kartu di stamp_cards & catat ke stamp_history
+  // 5. Perbarui / buat kartu di stamp_cards & catat ke stamp_history
   if (tx.stampEarned && newStampEntry) {
     const wrappedToNewCard = previousStamps + 1 > 10;
 
@@ -707,28 +730,180 @@ export async function recordTransactionInSupabase(params: {
     }
   }
 
-  // 5. Sinkronkan ringkasan saldo member ke tabel members
-  const { error: memberUpdateErr } = await supabase
-    .from('members')
-    .update({
-      card_number: updatedMember.cardNumber,
-      stamps: updatedMember.stamps,
-      total_cups_all_time: updatedMember.totalCupsAllTime,
-      total_spent_all_time: updatedMember.totalSpentAllTime,
-      completed_cards: updatedMember.completedCards,
-      last_used_at: updatedMember.lastUsedAt,
-      last_used_outlet: updatedMember.lastUsedOutlet,
-    })
-    .eq('id', updatedMember.id);
+  return { nextActiveCardId };
+}
 
-  if (memberUpdateErr) {
-    console.error(
-      '[Supabase] Gagal memperbarui data member:',
-      memberUpdateErr
-    );
+export interface MemberLiveSnapshot {
+  member: Member;
+  activeCardId?: string;
+  memberTransactions: Transaction[];
+  allMembersSummary: Pick<
+    Member,
+    | 'id'
+    | 'cardNumber'
+    | 'stamps'
+    | 'totalCupsAllTime'
+    | 'totalSpentAllTime'
+    | 'completedCards'
+    | 'lastUsedAt'
+    | 'lastUsedOutlet'
+  >[];
+}
+
+export async function syncMemberLiveStateFromSupabase(
+  memberId: string
+): Promise<MemberLiveSnapshot | null> {
+  if (!supabase || !memberId) return null;
+
+  const [membersRes, cardsRes, vouchersRes, historyRes, txRes] =
+    await Promise.all([
+      supabase
+        .from('members')
+        .select('*')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('stamp_cards')
+        .select('*')
+        .eq('member_id', memberId)
+        .order('issued_at', { ascending: false }),
+      supabase
+        .from('vouchers')
+        .select('*')
+        .eq('member_id', memberId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('stamp_history')
+        .select('*')
+        .eq('member_id', memberId)
+        .order('slot', { ascending: true }),
+      supabase
+        .from('transactions')
+        .select('*')
+        .eq('member_id', memberId)
+        .order('created_at', { ascending: false }),
+    ]);
+
+  if (membersRes.error || !membersRes.data) {
+    if (membersRes.error) {
+      console.error(
+        '[Supabase] Gagal menyinkronkan data member:',
+        membersRes.error
+      );
+    }
+    return null;
   }
 
-  return { nextActiveCardId };
+  const targetRow = (membersRes.data as DbMemberRow[]).find(
+    (m) => m.id === memberId
+  );
+  if (!targetRow) return null;
+
+  const activeCard = !cardsRes.error && cardsRes.data
+    ? (cardsRes.data as DbStampCardRow[]).find((c) => c.status === 'active')
+    : undefined;
+
+  const vouchers: Voucher[] =
+    !vouchersRes.error && vouchersRes.data
+      ? (vouchersRes.data as DbVoucherRow[]).map((v) => ({
+          id: v.id,
+          code: v.code,
+          title: v.title,
+          subtitle: v.subtitle,
+          type: v.type,
+          discountPercent: v.discount_percent ?? undefined,
+          maxDiscountValue:
+            v.max_discount_value !== null
+              ? Number(v.max_discount_value)
+              : undefined,
+          status: v.status,
+          issuedAt: v.issued_at,
+          expiresAt: v.expires_at,
+          usedAt: v.used_at ?? undefined,
+          usedOutlet: v.used_outlet ?? undefined,
+          description: v.description,
+        }))
+      : [];
+
+  const stampDates: StampHistoryEntry[] =
+    !historyRes.error && historyRes.data
+      ? (historyRes.data as DbStampHistoryRow[])
+          .filter(
+            (h) =>
+              !activeCard || !h.stamp_card_id || h.stamp_card_id === activeCard.id
+          )
+          .map((h) => ({
+            slot: h.slot,
+            date: h.date,
+            outlet: h.outlet,
+            item: h.item,
+          }))
+      : [];
+
+  const memberTransactions: Transaction[] =
+    !txRes.error && txRes.data
+      ? (txRes.data as DbTransactionRow[]).map((t) => ({
+          id: t.id,
+          memberId: t.member_id,
+          memberName: t.member_name,
+          memberSerial: t.member_serial,
+          outlet: t.outlet,
+          date: t.date,
+          time: t.time,
+          isoDate: t.iso_date,
+          items: t.items ?? [],
+          grossAmount: Number(t.gross_amount),
+          discountAmount: Number(t.discount_amount),
+          netAmount: Number(t.net_amount),
+          stampEarned: Boolean(t.stamp_earned),
+          voucherUsedTitle: t.voucher_used_title ?? undefined,
+          cashierName: t.cashier_name,
+        }))
+      : [];
+
+  const member: Member = {
+    id: targetRow.id,
+    name: targetRow.name,
+    firstName: targetRow.first_name,
+    phone: targetRow.phone,
+    email: targetRow.email ?? undefined,
+    pin: targetRow.pin,
+    cardNumber: activeCard?.card_number || targetRow.card_number || '01',
+    serialCode: activeCard?.serial_code || targetRow.serial_code,
+    stamps:
+      activeCard !== undefined
+        ? activeCard.stamps_count
+        : targetRow.stamps ?? 0,
+    totalCupsAllTime: targetRow.total_cups_all_time ?? 0,
+    totalSpentAllTime: Number(targetRow.total_spent_all_time ?? 0),
+    completedCards: targetRow.completed_cards ?? 0,
+    birthday: targetRow.birthday ?? undefined,
+    joinedAt: targetRow.joined_at,
+    lastUsedAt: targetRow.last_used_at,
+    lastUsedOutlet: targetRow.last_used_outlet,
+    membershipExpiresAt: targetRow.membership_expires_at,
+    membershipStatus: targetRow.membership_status,
+    favoriteOutlet: targetRow.favorite_outlet,
+    vouchers,
+    stampDates,
+  };
+
+  const allMembersSummary = (membersRes.data as DbMemberRow[]).map((m) => ({
+    id: m.id,
+    cardNumber: m.id === memberId ? member.cardNumber : m.card_number || '01',
+    stamps: m.id === memberId ? member.stamps : m.stamps ?? 0,
+    totalCupsAllTime: m.total_cups_all_time ?? 0,
+    totalSpentAllTime: Number(m.total_spent_all_time ?? 0),
+    completedCards: m.completed_cards ?? 0,
+    lastUsedAt: m.last_used_at,
+    lastUsedOutlet: m.last_used_outlet,
+  }));
+
+  return {
+    member,
+    activeCardId: activeCard?.id,
+    memberTransactions,
+    allMembersSummary,
+  };
 }
 
 export async function syncMemberExpiryInSupabase(
@@ -854,7 +1029,7 @@ export async function syncMenuItemsInSupabase(items: MenuItem[]) {
 
 export async function upsertStaffInSupabase(staff: StaffAccount) {
   if (!supabase) return;
-  const { error } = await supabase.from('staff_accounts').upsert({
+  const basePayload = {
     id: staff.id,
     name: staff.name,
     role: staff.role,
@@ -865,16 +1040,225 @@ export async function upsertStaffInSupabase(staff: StaffAccount) {
     active: staff.active,
     transactions_today: staff.transactionsToday,
     last_active: staff.lastActive,
+  };
+  const { error } = await supabase.from('staff_accounts').upsert({
+    ...basePayload,
+    phone: staff.phone ?? null,
+    email: staff.email ?? null,
   });
-  if (error) console.error('[Supabase] Gagal menyimpan staff_accounts:', error);
+  if (error) {
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('phone') || msg.includes('email') || msg.includes('schema cache')) {
+      const { error: fallbackErr } = await supabase
+        .from('staff_accounts')
+        .upsert(basePayload);
+      if (fallbackErr) {
+        console.error('[Supabase] Gagal menyimpan staff_accounts:', fallbackErr);
+      }
+    } else {
+      console.error('[Supabase] Gagal menyimpan staff_accounts:', error);
+    }
+  }
 }
 
 export async function syncWaTemplateInSupabase(tpl: WAMessageTemplate) {
   if (!supabase) return;
   const { error } = await supabase
     .from('wa_message_templates')
-    .update({ enabled: tpl.enabled })
+    .update({
+      enabled: tpl.enabled,
+      last_sent: tpl.lastSent,
+      audience_count: tpl.audienceCount,
+      message_preview: tpl.messagePreview,
+    })
     .eq('id', tpl.id);
   if (error)
     console.error('[Supabase] Gagal memperbarui wa_message_templates:', error);
 }
+
+export function normalizePhoneVariants(raw: string): string[] {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return [];
+  const variants = new Set<string>([digits]);
+  if (digits.startsWith('0')) {
+    variants.add(`62${digits.slice(1)}`);
+  } else if (digits.startsWith('62')) {
+    variants.add(`0${digits.slice(2)}`);
+  } else if (digits.startsWith('8')) {
+    variants.add(`0${digits}`);
+    variants.add(`62${digits}`);
+  }
+  return Array.from(variants);
+}
+
+export function normalizeWaPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('62')) return digits;
+  if (digits.startsWith('0')) return `62${digits.slice(1)}`;
+  if (digits.startsWith('8')) return `62${digits}`;
+  return digits;
+}
+
+export async function findMemberForResetInSupabase(
+  method: 'phone' | 'email',
+  contact: string
+): Promise<Member | null> {
+  if (!supabase) return null;
+  const cleaned = contact.trim();
+  if (!cleaned) return null;
+
+  let matchedId: string | null = null;
+  if (method === 'email') {
+    const { data, error } = await supabase
+      .from('members')
+      .select('id')
+      .ilike('email', cleaned)
+      .maybeSingle();
+    if (error) {
+      console.error('[Supabase] Gagal mencari email member:', error);
+      return null;
+    }
+    matchedId = data?.id ?? null;
+  } else {
+    const variants = normalizePhoneVariants(cleaned);
+    for (const candidate of variants) {
+      const { data, error } = await supabase
+        .from('members')
+        .select('id')
+        .eq('phone', candidate)
+        .maybeSingle();
+      if (error) {
+        console.error('[Supabase] Gagal mencari no HP member:', error);
+        continue;
+      }
+      if (data?.id) {
+        matchedId = data.id;
+        break;
+      }
+    }
+  }
+
+  if (!matchedId) return null;
+  const snapshot = await syncMemberLiveStateFromSupabase(matchedId);
+  return snapshot?.member ?? null;
+}
+
+export async function updateMemberPinInSupabase(
+  memberId: string,
+  newPin: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase) return { ok: true };
+  const { error } = await supabase
+    .from('members')
+    .update({ pin: newPin })
+    .eq('id', memberId);
+  if (error) {
+    console.error('[Supabase] Gagal memperbarui PIN member:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+export async function findStaffForResetInSupabase(
+  method: 'phone' | 'email',
+  contact: string
+): Promise<StaffAccount | null> {
+  if (!supabase) return null;
+  const cleaned = contact.trim();
+  if (!cleaned) return null;
+
+  let row: Record<string, unknown> | null = null;
+  if (method === 'email') {
+    const { data, error } = await supabase
+      .from('staff_accounts')
+      .select('*')
+      .ilike('email', cleaned)
+      .maybeSingle();
+    if (error) {
+      console.error('[Supabase] Gagal mencari email staf:', error);
+      return null;
+    }
+    row = data as Record<string, unknown> | null;
+  } else {
+    const variants = normalizePhoneVariants(cleaned);
+    for (const candidate of variants) {
+      const { data, error } = await supabase
+        .from('staff_accounts')
+        .select('*')
+        .eq('phone', candidate)
+        .maybeSingle();
+      if (error) {
+        console.error('[Supabase] Gagal mencari no HP staf:', error);
+        continue;
+      }
+      if (data) {
+        row = data as Record<string, unknown>;
+        break;
+      }
+    }
+  }
+
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    role: row.role as StaffAccount['role'],
+    roleLabel: String(row.role_label),
+    outlet: row.outlet as StaffAccount['outlet'],
+    username: String(row.username),
+    password: String(row.password ?? ''),
+    phone: row.phone ? String(row.phone) : undefined,
+    email: row.email ? String(row.email) : undefined,
+    active: Boolean(row.active),
+    transactionsToday: Number(row.transactions_today ?? 0),
+    lastActive: String(row.last_active ?? ''),
+  };
+}
+
+export async function updateStaffPasswordInSupabase(
+  staffId: string,
+  newPassword: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase) return { ok: true };
+  const { error } = await supabase
+    .from('staff_accounts')
+    .update({ password: newPassword })
+    .eq('id', staffId);
+  if (error) {
+    console.error('[Supabase] Gagal memperbarui kata sandi staf:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+export async function issueVoucherInSupabase(
+  memberId: string,
+  voucher: Voucher
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase) return { ok: true };
+  const { error } = await supabase.from('vouchers').insert([
+    {
+      id: voucher.id,
+      member_id: memberId,
+      code: voucher.code,
+      title: voucher.title,
+      subtitle: voucher.subtitle,
+      type: voucher.type,
+      discount_percent: voucher.discountPercent ?? null,
+      max_discount_value: voucher.maxDiscountValue ?? null,
+      status: voucher.status,
+      issued_at: voucher.issuedAt,
+      expires_at: voucher.expiresAt,
+      used_at: voucher.usedAt ?? null,
+      used_outlet: voucher.usedOutlet ?? null,
+      description: voucher.description,
+    },
+  ]);
+  if (error) {
+    console.error('[Supabase] Gagal menerbitkan voucher ke Supabase:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+

@@ -76,7 +76,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
-  // Live stamping animation state (triggered when awarded from Kasir POS)
+  // Live stamping animation state (triggered when awarded from Kasir POS or Supabase Realtime)
   const [animatingSlot, setAnimatingSlot] = useState<number | null>(null);
   const [animationNonce, setAnimationNonce] = useState(0);
   const [justStampedLabel, setJustStampedLabel] = useState<string | null>(null);
@@ -86,8 +86,23 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
     voucher?: string;
   } | null>(null);
   const seenEventTsRef = useRef<number>(0);
+  const lastHandledStampAtRef = useRef<{ slot: number; at: number }>({
+    slot: 0,
+    at: 0,
+  });
+  const prevMemberSnapshotRef = useRef<{
+    id: string;
+    stamps: number;
+    cardNumber: string;
+    voucherIds: string[];
+  }>({
+    id: member.id,
+    stamps: member.stamps,
+    cardNumber: member.cardNumber,
+    voucherIds: member.vouchers.map((v) => v.id),
+  });
 
-  // Trigger stamp animation automatically when returning from Kasir POS after a fresh stamp
+  // Trigger stamp animation automatically when receiving a stamp event (POS or Realtime)
   useEffect(() => {
     if (
       lastStampEvent &&
@@ -95,6 +110,10 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
       lastStampEvent.timestamp > seenEventTsRef.current
     ) {
       seenEventTsRef.current = lastStampEvent.timestamp;
+      lastHandledStampAtRef.current = {
+        slot: lastStampEvent.slot,
+        at: Date.now(),
+      };
       setAnimatingSlot(lastStampEvent.slot);
       setAnimationNonce((n) => n + 1);
       setJustStampedLabel(
@@ -105,8 +124,73 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
         outlet: lastStampEvent.outlet,
         voucher: lastStampEvent.newlyIssuedVoucher,
       });
+      setActiveTab((tab) => (tab === 'qr' ? 'kartu' : tab));
     }
   }, [lastStampEvent, member.id]);
+
+  // Safety net: also trigger when member.stamps increases directly for the same logged-in member
+  useEffect(() => {
+    const prev = prevMemberSnapshotRef.current;
+    if (prev.id !== member.id) {
+      prevMemberSnapshotRef.current = {
+        id: member.id,
+        stamps: member.stamps,
+        cardNumber: member.cardNumber,
+        voucherIds: member.vouchers.map((v) => v.id),
+      };
+      setAnimatingSlot(null);
+      setJustStampedLabel(null);
+      setRecentPosStamp(null);
+      return;
+    }
+
+    const cardRolledOver =
+      prev.cardNumber !== member.cardNumber && member.stamps >= 1;
+    const wrappedFromFull =
+      prev.stamps === 10 && member.stamps >= 1 && member.stamps < prev.stamps;
+    const stampIncreased =
+      member.stamps > prev.stamps || cardRolledOver || wrappedFromFull;
+
+    if (stampIncreased) {
+      const alreadyTriggeredByEvent =
+        lastHandledStampAtRef.current.slot === member.stamps &&
+        Date.now() - lastHandledStampAtRef.current.at < 800;
+
+      if (!alreadyTriggeredByEvent) {
+        const newVoucher = member.vouchers.find(
+          (v) => v.status === 'active' && !prev.voucherIds.includes(v.id)
+        );
+        lastHandledStampAtRef.current = {
+          slot: member.stamps,
+          at: Date.now(),
+        };
+        setAnimatingSlot(member.stamps);
+        setAnimationNonce((n) => n + 1);
+        setJustStampedLabel(
+          `+1 Stempel · ${getOutletFull(member.lastUsedOutlet)}`
+        );
+        setRecentPosStamp({
+          slot: member.stamps,
+          outlet: member.lastUsedOutlet,
+          voucher: newVoucher?.title,
+        });
+        setActiveTab((tab) => (tab === 'qr' ? 'kartu' : tab));
+      }
+    }
+
+    prevMemberSnapshotRef.current = {
+      id: member.id,
+      stamps: member.stamps,
+      cardNumber: member.cardNumber,
+      voucherIds: member.vouchers.map((v) => v.id),
+    };
+  }, [
+    member.id,
+    member.stamps,
+    member.cardNumber,
+    member.lastUsedOutlet,
+    member.vouchers,
+  ]);
 
   const activeVouchers = member.vouchers.filter((v) => v.status === 'active');
   const usedVouchers = member.vouchers.filter((v) => v.status !== 'active');

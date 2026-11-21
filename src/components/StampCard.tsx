@@ -68,23 +68,43 @@ export const StampCard: React.FC<StampCardProps> = ({
   const [activeAnimSlot, setActiveAnimSlot] = useState<number | null>(null);
   const [animCycle, setAnimCycle] = useState(0);
   const prevStampsRef = useRef(stamps);
+  const prevCardNumberRef = useRef(cardNumber);
+  const lastAutoAnimRef = useRef<{ slot: number; at: number }>({
+    slot: 0,
+    at: 0,
+  });
 
-  // Automatically animate whenever stamps increase (or wrap from 10 to 1)
+  // Automatically animate whenever stamps increase (or wrap to a new card)
   useEffect(() => {
     const prev = prevStampsRef.current;
-    if (stamps > prev || (prev === 10 && stamps === 1)) {
+    const prevCard = prevCardNumberRef.current;
+    const cardRolledOver = prevCard !== cardNumber && stamps >= 1;
+    const wrappedFromFull = prev === 10 && stamps >= 1 && stamps < prev;
+
+    if (stamps > prev || cardRolledOver || wrappedFromFull) {
+      lastAutoAnimRef.current = { slot: stamps, at: Date.now() };
       setActiveAnimSlot(stamps);
       setAnimCycle((c) => c + 1);
       const timer = setTimeout(() => setActiveAnimSlot(null), 1500);
       prevStampsRef.current = stamps;
+      prevCardNumberRef.current = cardNumber;
       return () => clearTimeout(timer);
     }
     prevStampsRef.current = stamps;
-  }, [stamps]);
+    prevCardNumberRef.current = cardNumber;
+  }, [stamps, cardNumber]);
 
   // Allow explicit replay / external trigger via animatingSlot + animationNonce
   useEffect(() => {
     if (animatingSlot && animationNonce > 0) {
+      const recentlyAutoAnimatedSameSlot =
+        lastAutoAnimRef.current.slot === animatingSlot &&
+        Date.now() - lastAutoAnimRef.current.at < 450;
+
+      if (recentlyAutoAnimatedSameSlot) {
+        return;
+      }
+
       setActiveAnimSlot(animatingSlot);
       setAnimCycle((c) => c + 1);
       const timer = setTimeout(() => setActiveAnimSlot(null), 1500);
