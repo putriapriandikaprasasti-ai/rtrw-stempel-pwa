@@ -1,7 +1,7 @@
 {
   "name": "RTRW — Kartu Stempel Digital",
-  "description": "Prototipe interaktif kartu stempel loyalitas digital untuk RTRW Coffee Semarang (Member, Kasir POS, dan Dasbor Admin) dengan pratinjau Web dan Mobile 390px.",
-  "requestFramePermissions": [],
+  "description": "Aplikasi kartu stempel loyalitas digital untuk RTRW Coffee Semarang (Member, Kasir POS, dan Dasbor Admin).",
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

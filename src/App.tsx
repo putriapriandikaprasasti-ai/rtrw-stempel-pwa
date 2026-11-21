@@ -3,9 +3,11 @@ import { CheckCircle2 } from 'lucide-react';
 import {
   INITIAL_LANDING_CONTENT,
   INITIAL_MEMBERS,
+  INITIAL_MENU_ITEMS,
   INITIAL_RULES,
   INITIAL_STAFF,
   INITIAL_TRANSACTIONS,
+  INITIAL_UI_CONFIG,
   INITIAL_WA_TEMPLATES,
   OUTLETS,
 } from './data/mockData';
@@ -13,10 +15,12 @@ import {
   AppRoute,
   LandingContent,
   Member,
+  MenuItem,
   OutletId,
   OutletInfo,
   ProgramRules,
   StaffAccount,
+  StaffMemberUiConfig,
   Transaction,
   Voucher,
   WAMessageTemplate,
@@ -45,7 +49,10 @@ export default function App() {
   const [landingContent, setLandingContent] = useState<LandingContent>(
     INITIAL_LANDING_CONTENT
   );
+  const [uiConfig, setUiConfig] =
+    useState<StaffMemberUiConfig>(INITIAL_UI_CONFIG);
   const [outlets, setOutlets] = useState<OutletInfo[]>(OUTLETS);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(INITIAL_MENU_ITEMS);
   const [waTemplates, setWaTemplates] =
     useState<WAMessageTemplate[]>(INITIAL_WA_TEMPLATES);
 
@@ -347,6 +354,7 @@ export default function App() {
             onGoStaffAuth={() => setRoute('auth-staff')}
             rules={rules}
             landingContent={landingContent}
+            uiConfig={uiConfig}
             outlets={outlets}
           />
         );
@@ -367,21 +375,13 @@ export default function App() {
             member={activeMember}
             allMembers={members}
             transactions={transactions}
+            outlets={outlets}
             rules={rules}
+            uiConfig={uiConfig}
             darkMode={darkMode}
             onToggleDark={() => setDarkMode((d) => !d)}
             onLogout={() => setRoute('landing')}
             lastStampEvent={lastStampEvent}
-            onSimulateCashierWithMember={(memberId) => {
-              setActiveStaff(
-                staffAccounts.find((s) => s.role === 'kasir') ||
-                  staffAccounts[0]
-              );
-              setActiveCashierOutlet('pemuda');
-              setCashierPreselectMemberId(memberId);
-              setRoute('cashier');
-              showToast('Dialihkan ke Kasir POS dengan QR anggota terpilih');
-            }}
           />
         );
       case 'auth-staff':
@@ -389,6 +389,7 @@ export default function App() {
           <AuthStaffView
             staffAccounts={staffAccounts}
             outlets={outlets}
+            uiConfig={uiConfig}
             darkMode={darkMode}
             onToggleDark={() => setDarkMode((d) => !d)}
             onBackLanding={() => setRoute('landing')}
@@ -400,18 +401,17 @@ export default function App() {
           <CashierView
             staff={activeStaff}
             activeOutlet={activeCashierOutlet}
+            outlets={outlets}
             members={members}
+            menuItems={menuItems}
             initialSelectedMemberId={cashierPreselectMemberId}
             rules={rules}
+            uiConfig={uiConfig}
             darkMode={darkMode}
             onToggleDark={() => setDarkMode((d) => !d)}
             onLogout={() => {
               setCashierPreselectMemberId(null);
               setRoute('auth-staff');
-            }}
-            onViewMemberCard={(memberId) => {
-              setActiveMemberId(memberId);
-              setRoute('member-app');
             }}
             onRecordTransaction={handleRecordTransaction}
           />
@@ -425,7 +425,9 @@ export default function App() {
             staffAccounts={staffAccounts}
             rules={rules}
             landingContent={landingContent}
+            uiConfig={uiConfig}
             outlets={outlets}
+            menuItems={menuItems}
             waTemplates={waTemplates}
             darkMode={darkMode}
             onToggleDark={() => setDarkMode((d) => !d)}
@@ -438,8 +440,16 @@ export default function App() {
               setLandingContent(next);
               showToast('Konten & foto Beranda diperbarui');
             }}
+            onUpdateUiConfig={(next) => {
+              setUiConfig(next);
+              showToast('Teks Login Staf, Kasir & Kartu Member diperbarui');
+            }}
             onUpdateOutlets={(next) => {
               setOutlets(next);
+            }}
+            onUpdateMenuItems={(next, message) => {
+              setMenuItems(next);
+              if (message) showToast(message);
             }}
             onToggleWaTemplate={(id) => {
               setWaTemplates((prev) =>
@@ -449,7 +459,7 @@ export default function App() {
               );
             }}
             onSendTestWa={(tpl) => {
-              showToast(`Uji kirim WhatsApp "${tpl.title}" ke nomor demo berhasil`);
+              showToast(`Uji kirim WhatsApp "${tpl.title}" berhasil dikirim`);
             }}
             onToggleStaffActive={(id) => {
               setStaffAccounts((prev) =>
@@ -466,13 +476,41 @@ export default function App() {
                 roleLabel: `Kasir ${payload.outlet === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA'}`,
                 outlet: payload.outlet,
                 username: payload.username,
-                password: '••••••',
+                password: payload.password || '••••••',
                 active: true,
                 transactionsToday: 0,
                 lastActive: 'Baru dibuat',
               };
               setStaffAccounts((prev) => [...prev, newStaff]);
               showToast(`Akun kasir ${payload.name} ditambahkan`);
+            }}
+            onUpdateStaff={(id, payload) => {
+              setStaffAccounts((prev) =>
+                prev.map((s) => {
+                  if (s.id !== id) return s;
+                  const outletLabel =
+                    payload.outlet === 'pemuda'
+                      ? 'Pemuda'
+                      : payload.outlet === 'awanncosta'
+                        ? 'AWANNCOSTA'
+                        : 'Pusat';
+                  const nextRoleLabel =
+                    s.role === 'kasir'
+                      ? `Kasir ${outletLabel}`
+                      : s.role === 'admin_outlet'
+                        ? `Admin ${outletLabel}`
+                        : s.roleLabel;
+                  return {
+                    ...s,
+                    name: payload.name,
+                    username: payload.username,
+                    outlet: payload.outlet,
+                    roleLabel: nextRoleLabel,
+                    password: payload.password ? payload.password : s.password,
+                  };
+                })
+              );
+              showToast(`Akun staf ${payload.name} diperbarui`);
             }}
             onExtendMembership={(memberId) => {
               setMembers((prev) =>

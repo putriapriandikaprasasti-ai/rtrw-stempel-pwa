@@ -15,14 +15,42 @@ export type AdminTab =
   | 'klaim'
   | 'analisis'
   | 'transaksi'
+  | 'menu-keseluruhan'
+  | 'menu-cepat'
   | 'warga'
   | 'database-anggota'
   | 'pesan-wa'
   | 'aturan'
   | 'konten-beranda'
+  | 'staf-member-ui'
   | 'akun-kasir';
 
 export type ViewportMode = 'desktop' | 'mobile';
+
+export interface StaffMemberUiConfig {
+  // Login Staf
+  staffHeaderBadge: string;
+  staffLoginTitle: string;
+  staffLoginSubtitle: string;
+  staffOutletLabel: string;
+  staffLoginButtonText: string;
+  // Layar Kasir POS
+  cashierHeaderBadge: string;
+  cashierStep1Title: string;
+  cashierStep2Title: string;
+  cashierEmptyPrompt: string;
+  cashierSubmitButtonText: string;
+  // Tab Kartu Member & Fisik Kartu Stempel
+  memberHeaderBadge: string;
+  memberGreetingPrefix: string;
+  cardBrandTitle: string;
+  cardSubtitle: string;
+  cardNumberLabel: string;
+  memberPosNotice: string;
+  memberQrCtaText: string;
+  memberProgressSuffix: string;
+  memberCardFullText: string;
+}
 
 export interface LandingContent {
   heroKicker: string;
@@ -163,4 +191,21 @@ export interface WAMessageTemplate {
   messagePreview: string;
   lastSent: string;
   enabled: boolean;
+}
+
+export type MenuCategory =
+  | 'Kopi'
+  | 'Signature'
+  | 'Non-Kopi'
+  | 'Pastry & Camilan';
+
+export interface MenuItem {
+  id: string;
+  name: string;
+  category: MenuCategory;
+  price: number;
+  outlets: OutletId[];
+  isQuickMenu: boolean;
+  active: boolean;
+  description?: string;
 }

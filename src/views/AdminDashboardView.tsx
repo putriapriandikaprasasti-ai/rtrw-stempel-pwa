@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   Calendar,
   Check,
   Coffee,
@@ -7,19 +9,23 @@ import {
   LogOut,
   MessageSquare,
   Moon,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
   Send,
   Sun,
+  Trash2,
   Upload,
   UserPlus,
   X,
+  Zap,
 } from 'lucide-react';
 import { StampCard } from '../components/StampCard';
 import {
   DAILY_REVENUE_SERIES,
   INITIAL_LANDING_CONTENT,
+  INITIAL_UI_CONFIG,
   OUTLETS as DEFAULT_OUTLETS,
   formatRupiah,
 } from '../data/mockData';
@@ -27,10 +33,13 @@ import {
   AdminTab,
   LandingContent,
   Member,
+  MenuCategory,
+  MenuItem,
   OutletId,
   OutletInfo,
   ProgramRules,
   StaffAccount,
+  StaffMemberUiConfig,
   Transaction,
   WAMessageTemplate,
 } from '../types';
@@ -42,14 +51,18 @@ interface AdminDashboardViewProps {
   staffAccounts: StaffAccount[];
   rules: ProgramRules;
   landingContent: LandingContent;
+  uiConfig: StaffMemberUiConfig;
   outlets: OutletInfo[];
+  menuItems: MenuItem[];
   waTemplates: WAMessageTemplate[];
   darkMode: boolean;
   onToggleDark: () => void;
   onLogout: () => void;
   onUpdateRules: (next: ProgramRules) => void;
   onUpdateLandingContent: (next: LandingContent) => void;
+  onUpdateUiConfig: (next: StaffMemberUiConfig) => void;
   onUpdateOutlets: (next: OutletInfo[]) => void;
+  onUpdateMenuItems: (next: MenuItem[], message?: string) => void;
   onToggleWaTemplate: (id: string) => void;
   onSendTestWa: (template: WAMessageTemplate) => void;
   onToggleStaffActive: (id: string) => void;
@@ -57,20 +70,40 @@ interface AdminDashboardViewProps {
     name: string;
     username: string;
     outlet: OutletId;
+    password?: string;
   }) => void;
+  onUpdateStaff: (
+    id: string,
+    payload: {
+      name: string;
+      username: string;
+      outlet: OutletId | 'all';
+      password?: string;
+    }
+  ) => void;
   onExtendMembership: (memberId: string) => void;
 }
+
+const MENU_CATEGORIES: MenuCategory[] = [
+  'Kopi',
+  'Signature',
+  'Non-Kopi',
+  'Pastry & Camilan',
+];
 
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: 'ringkasan', label: 'Ringkasan' },
   { id: 'klaim', label: 'Klaim per outlet' },
   { id: 'analisis', label: 'Analisis' },
   { id: 'transaksi', label: 'Transaksi & voucher' },
+  { id: 'menu-keseluruhan', label: 'Menu keseluruhan' },
+  { id: 'menu-cepat', label: 'Tambahan menu cepat' },
   { id: 'warga', label: 'Warga Setia' },
   { id: 'database-anggota', label: 'Database anggota' },
   { id: 'pesan-wa', label: 'Pesan WA' },
   { id: 'aturan', label: 'Aturan program' },
   { id: 'konten-beranda', label: 'Konten & Foto Beranda' },
+  { id: 'staf-member-ui', label: 'Login Staf & Kartu Member' },
   { id: 'akun-kasir', label: 'Akun kasir' },
 ];
 
@@ -81,18 +114,23 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   staffAccounts,
   rules,
   landingContent,
+  uiConfig,
   outlets,
+  menuItems,
   waTemplates,
   darkMode,
   onToggleDark,
   onLogout,
   onUpdateRules,
   onUpdateLandingContent,
+  onUpdateUiConfig,
   onUpdateOutlets,
+  onUpdateMenuItems,
   onToggleWaTemplate,
   onSendTestWa,
   onToggleStaffActive,
   onAddStaff,
+  onUpdateStaff,
   onExtendMembership,
 }) => {
   const defaultOutlet: 'all' | OutletId =
@@ -143,6 +181,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   );
   const [landingSaved, setLandingSaved] = useState(false);
 
+  // Login Staf / Kasir & Kartu Member UI draft
+  const [uiDraft, setUiDraft] = useState<StaffMemberUiConfig>(uiConfig);
+  const [uiSaved, setUiSaved] = useState(false);
+
   useEffect(() => {
     setRulesDraft(rules);
   }, [rules]);
@@ -152,6 +194,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   }, [landingContent]);
 
   useEffect(() => {
+    setUiDraft(uiConfig);
+  }, [uiConfig]);
+
+  useEffect(() => {
     setOutletsDraft(outlets);
     setMenuTextByOutlet(
       Object.fromEntries(outlets.map((o) => [o.id, o.signatureMenu.join(', ')]))
@@ -159,11 +205,50 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setDraftImgErrors({});
   }, [outlets]);
 
-  // New cashier form
+  // New & edit cashier/staff form
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffUsername, setNewStaffUsername] = useState('');
   const [newStaffOutlet, setNewStaffOutlet] = useState<OutletId>('pemuda');
+  const [newStaffPassword, setNewStaffPassword] = useState('');
+
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
+  const [editStaffName, setEditStaffName] = useState('');
+  const [editStaffUsername, setEditStaffUsername] = useState('');
+  const [editStaffOutlet, setEditStaffOutlet] = useState<OutletId | 'all'>('pemuda');
+  const [editStaffPassword, setEditStaffPassword] = useState('');
+
+  // Menu keseluruhan & Tambahan menu cepat state
+  const [menuSearch, setMenuSearch] = useState('');
+  const [menuCatFilter, setMenuCatFilter] = useState<'all' | MenuCategory>('all');
+  const [menuStatusFilter, setMenuStatusFilter] = useState<
+    'all' | 'active' | 'inactive'
+  >('all');
+  const [showMenuForm, setShowMenuForm] = useState(false);
+  const [editingMenuId, setEditingMenuId] = useState<string | null>(null);
+  const [menuFormName, setMenuFormName] = useState('');
+  const [menuFormCategory, setMenuFormCategory] =
+    useState<MenuCategory>('Signature');
+  const [menuFormPrice, setMenuFormPrice] = useState<number>(28000);
+  const [menuFormDesc, setMenuFormDesc] = useState('');
+  const [menuFormOutlets, setMenuFormOutlets] = useState<OutletId[]>([
+    'pemuda',
+    'awanncosta',
+  ]);
+  const [menuFormQuick, setMenuFormQuick] = useState<boolean>(false);
+
+  // Quick menu tab state
+  const [quickCandidateSearch, setQuickCandidateSearch] = useState('');
+  const [quickNewName, setQuickNewName] = useState('');
+  const [quickNewCategory, setQuickNewCategory] =
+    useState<MenuCategory>('Signature');
+  const [quickNewPrice, setQuickNewPrice] = useState<number>(28000);
+  const [quickNewOutlets, setQuickNewOutlets] = useState<OutletId[]>([
+    'pemuda',
+    'awanncosta',
+  ]);
+  const [quickPreviewOutlet, setQuickPreviewOutlet] =
+    useState<OutletId>('pemuda');
 
   const inspectedMember = useMemo(
     () => members.find((m) => m.id === inspectedMemberId) || null,
@@ -575,6 +660,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setTimeout(() => setLandingSaved(false), 2200);
   };
 
+  const handleSaveUiConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateUiConfig(uiDraft);
+    setUiSaved(true);
+    setTimeout(() => setUiSaved(false), 2200);
+  };
+
+  const handleResetUiDefaults = () => {
+    setUiDraft(INITIAL_UI_CONFIG);
+    onUpdateUiConfig(INITIAL_UI_CONFIG);
+    setUiSaved(true);
+    setTimeout(() => setUiSaved(false), 2200);
+  };
+
   const handleCreateStaff = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStaffName.trim() || !newStaffUsername.trim()) return;
@@ -582,10 +681,179 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       name: newStaffName.trim(),
       username: newStaffUsername.trim(),
       outlet: newStaffOutlet,
+      password: newStaffPassword.trim() || undefined,
     });
     setNewStaffName('');
     setNewStaffUsername('');
+    setNewStaffPassword('');
     setShowAddStaff(false);
+  };
+
+  const openEditStaff = (acc: StaffAccount) => {
+    setEditingStaffId(acc.id);
+    setEditStaffName(acc.name);
+    setEditStaffUsername(acc.username);
+    setEditStaffOutlet(acc.outlet);
+    setEditStaffPassword('');
+  };
+
+  const handleSaveEditStaff = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaffId || !editStaffName.trim() || !editStaffUsername.trim()) return;
+    onUpdateStaff(editingStaffId, {
+      name: editStaffName.trim(),
+      username: editStaffUsername.trim(),
+      outlet: editStaffOutlet,
+      password: editStaffPassword.trim() || undefined,
+    });
+    setEditingStaffId(null);
+    setEditStaffPassword('');
+  };
+
+  // Menu management handlers
+  const resetMenuForm = () => {
+    setEditingMenuId(null);
+    setMenuFormName('');
+    setMenuFormCategory('Signature');
+    setMenuFormPrice(28000);
+    setMenuFormDesc('');
+    setMenuFormOutlets(['pemuda', 'awanncosta']);
+    setMenuFormQuick(false);
+    setShowMenuForm(false);
+  };
+
+  const openEditMenu = (item: MenuItem) => {
+    setEditingMenuId(item.id);
+    setMenuFormName(item.name);
+    setMenuFormCategory(item.category);
+    setMenuFormPrice(item.price);
+    setMenuFormDesc(item.description || '');
+    setMenuFormOutlets(item.outlets);
+    setMenuFormQuick(item.isQuickMenu);
+    setShowMenuForm(true);
+  };
+
+  const toggleFormOutlet = (
+    list: OutletId[],
+    setter: (next: OutletId[]) => void,
+    id: OutletId
+  ) => {
+    if (list.includes(id)) {
+      if (list.length === 1) return; // keep at least 1 outlet selected
+      setter(list.filter((o) => o !== id));
+    } else {
+      setter([...list, id]);
+    }
+  };
+
+  const handleSaveMenuForm = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = menuFormName.trim();
+    if (!trimmed || menuFormPrice <= 0) return;
+
+    if (editingMenuId) {
+      const next = menuItems.map((m) =>
+        m.id === editingMenuId
+          ? {
+              ...m,
+              name: trimmed,
+              category: menuFormCategory,
+              price: menuFormPrice,
+              description: menuFormDesc.trim() || undefined,
+              outlets: menuFormOutlets,
+              isQuickMenu: menuFormQuick,
+            }
+          : m
+      );
+      onUpdateMenuItems(next, `Menu "${trimmed}" diperbarui`);
+    } else {
+      const newItem: MenuItem = {
+        id: `menu-${Date.now()}`,
+        name: trimmed,
+        category: menuFormCategory,
+        price: menuFormPrice,
+        description: menuFormDesc.trim() || undefined,
+        outlets: menuFormOutlets,
+        isQuickMenu: menuFormQuick,
+        active: true,
+      };
+      onUpdateMenuItems([newItem, ...menuItems], `Menu "${trimmed}" ditambahkan`);
+    }
+    resetMenuForm();
+  };
+
+  const handleDeleteMenuItem = (item: MenuItem) => {
+    onUpdateMenuItems(
+      menuItems.filter((m) => m.id !== item.id),
+      `Menu "${item.name}" dihapus`
+    );
+    if (editingMenuId === item.id) {
+      resetMenuForm();
+    }
+  };
+
+  const handleToggleMenuActive = (item: MenuItem) => {
+    const next = menuItems.map((m) =>
+      m.id === item.id ? { ...m, active: !m.active } : m
+    );
+    onUpdateMenuItems(
+      next,
+      item.active
+        ? `Menu "${item.name}" dinonaktifkan`
+        : `Menu "${item.name}" diaktifkan`
+    );
+  };
+
+  const handleToggleQuickMenu = (item: MenuItem) => {
+    const next = menuItems.map((m) =>
+      m.id === item.id ? { ...m, isQuickMenu: !m.isQuickMenu } : m
+    );
+    onUpdateMenuItems(
+      next,
+      item.isQuickMenu
+        ? `"${item.name}" dikeluarkan dari Tambahan Menu Cepat`
+        : `"${item.name}" ditambahkan ke Tambahan Menu Cepat Kasir`
+    );
+  };
+
+  const handleMoveQuickMenu = (itemId: string, direction: 'up' | 'down') => {
+    const quickIds = menuItems.filter((m) => m.isQuickMenu).map((m) => m.id);
+    const pos = quickIds.indexOf(itemId);
+    if (pos === -1) return;
+    const swapPos = direction === 'up' ? pos - 1 : pos + 1;
+    if (swapPos < 0 || swapPos >= quickIds.length) return;
+
+    const targetId = quickIds[swapPos];
+    const idxA = menuItems.findIndex((m) => m.id === itemId);
+    const idxB = menuItems.findIndex((m) => m.id === targetId);
+    if (idxA === -1 || idxB === -1) return;
+
+    const copy = [...menuItems];
+    const temp = copy[idxA];
+    copy[idxA] = copy[idxB];
+    copy[idxB] = temp;
+    onUpdateMenuItems(copy);
+  };
+
+  const handleCreateQuickMenu = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = quickNewName.trim();
+    if (!trimmed || quickNewPrice <= 0) return;
+    const newItem: MenuItem = {
+      id: `menu-${Date.now()}`,
+      name: trimmed,
+      category: quickNewCategory,
+      price: quickNewPrice,
+      outlets: quickNewOutlets,
+      isQuickMenu: true,
+      active: true,
+    };
+    onUpdateMenuItems(
+      [...menuItems, newItem],
+      `"${trimmed}" ditambahkan ke Menu Cepat Kasir`
+    );
+    setQuickNewName('');
+    setQuickNewPrice(28000);
   };
 
   return (
@@ -1543,7 +1811,787 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </div>
         )}
 
-        {/* TAB 5: WARGA SETIA */}
+        {/* TAB 5: MENU KESELURUHAN */}
+        {activeTab === 'menu-keseluruhan' && (() => {
+          const q = menuSearch.trim().toLowerCase();
+          const filteredCatalog = menuItems.filter((item) => {
+            const matchOutlet =
+              outletFilter === 'all' || item.outlets.includes(outletFilter);
+            const matchCat =
+              menuCatFilter === 'all' || item.category === menuCatFilter;
+            const matchStatus =
+              menuStatusFilter === 'all' ||
+              (menuStatusFilter === 'active' ? item.active : !item.active);
+            const matchQuery =
+              !q ||
+              item.name.toLowerCase().includes(q) ||
+              (item.description && item.description.toLowerCase().includes(q)) ||
+              item.category.toLowerCase().includes(q);
+            return matchOutlet && matchCat && matchStatus && matchQuery;
+          });
+
+          const totalMenus = menuItems.length;
+          const activeMenusCount = menuItems.filter((m) => m.active).length;
+          const quickMenusCount = menuItems.filter(
+            (m) => m.active && m.isQuickMenu
+          ).length;
+
+          return (
+            <div className="space-y-5">
+              {/* Header & CTA */}
+              <div className="flex flex-col @3xl:flex-row @3xl:items-end justify-between gap-4">
+                <div>
+                  <h2 className="font-serif-display text-2xl @3xl:text-[28px] font-normal">
+                    Menu keseluruhan
+                  </h2>
+                  <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-1 max-w-2xl leading-relaxed">
+                    Kelola seluruh daftar menu kopi, non-kopi, dan pastry RTRW.
+                    Perubahan harga, ketersediaan outlet, maupun pintasan Menu
+                    Cepat langsung tersinkron ke Kasir POS.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showMenuForm && !editingMenuId) {
+                      resetMenuForm();
+                    } else {
+                      resetMenuForm();
+                      setShowMenuForm(true);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 self-start @3xl:self-auto px-4 py-2.5 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 transition-opacity whitespace-nowrap cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Tambah Menu Baru</span>
+                </button>
+              </div>
+
+              {/* Mini Stats */}
+              <div className="grid grid-cols-1 @md:grid-cols-3 gap-4">
+                <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-4 space-y-1">
+                  <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                    TOTAL KATALOG MENU
+                  </p>
+                  <p className="font-sans text-2xl font-bold tabular-nums">
+                    {totalMenus} item
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-4 space-y-1">
+                  <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                    TERSEDIA DI KASIR
+                  </p>
+                  <p className="font-sans text-2xl font-bold tabular-nums">
+                    {activeMenusCount} item
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-[#16202C] dark:bg-[#1E293B] text-white p-4 space-y-1 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-white/65">
+                      AKTIF DI MENU CEPAT
+                    </p>
+                    <p className="font-sans text-2xl font-bold tabular-nums mt-0.5">
+                      {quickMenusCount} item
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('menu-cepat')}
+                    className="px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 text-[11px] font-medium whitespace-nowrap cursor-pointer"
+                  >
+                    Atur Menu Cepat →
+                  </button>
+                </div>
+              </div>
+
+              {/* Add / Edit Menu Form */}
+              {showMenuForm && (
+                <form
+                  onSubmit={handleSaveMenuForm}
+                  className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 @3xl:p-6 space-y-4 shadow-xs"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-serif-display text-xl">
+                      {editingMenuId ? 'Edit Detail Menu' : 'Tambah Menu Baru'}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={resetMenuForm}
+                      className="p-1.5 rounded-lg text-[#646D78] hover:text-[#16202C] dark:hover:text-white cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 @3xl:grid-cols-4 gap-3">
+                    <div className="@3xl:col-span-2">
+                      <label className="block text-xs font-medium mb-1">
+                        Nama menu
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={menuFormName}
+                        onChange={(e) => setMenuFormName(e.target.value)}
+                        placeholder="cth: Aren Latte Spesial"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs focus:outline-none focus:border-[#16202C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">
+                        Kategori
+                      </label>
+                      <select
+                        value={menuFormCategory}
+                        onChange={(e) =>
+                          setMenuFormCategory(e.target.value as MenuCategory)
+                        }
+                        className="w-full px-3 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      >
+                        {MENU_CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">
+                        Harga jual (Rp)
+                      </label>
+                      <input
+                        type="number"
+                        min={1000}
+                        step={500}
+                        required
+                        value={menuFormPrice}
+                        onChange={(e) =>
+                          setMenuFormPrice(Number(e.target.value) || 0)
+                        }
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 font-mono-code text-xs tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium mb-1">
+                        Deskripsi singkat (opsional)
+                      </label>
+                      <input
+                        type="text"
+                        value={menuFormDesc}
+                        onChange={(e) => setMenuFormDesc(e.target.value)}
+                        placeholder="Keterangan rasa atau komposisi singkat"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-medium">
+                        Tersedia di outlet
+                      </label>
+                      <div className="flex flex-wrap items-center gap-4 pt-1">
+                        {(
+                          [
+                            { id: 'pemuda', label: 'RTRW Pemuda' },
+                            { id: 'awanncosta', label: 'RTRW AWANNCOSTA' },
+                          ] as const
+                        ).map((o) => (
+                          <label
+                            key={o.id}
+                            className="inline-flex items-center gap-2 text-xs cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={menuFormOutlets.includes(o.id)}
+                              onChange={() =>
+                                toggleFormOutlet(
+                                  menuFormOutlets,
+                                  setMenuFormOutlets,
+                                  o.id
+                                )
+                              }
+                              className="rounded border-[#DED9CF]"
+                            />
+                            <span>{o.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#EFECE5] dark:border-white/10">
+                    <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={menuFormQuick}
+                        onChange={(e) => setMenuFormQuick(e.target.checked)}
+                        className="rounded border-[#DED9CF]"
+                      />
+                      <span>
+                        Tampilkan juga di{' '}
+                        <strong>Tambahan Menu Cepat</strong> Kasir POS
+                      </span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={resetMenuForm}
+                        className="px-4 py-2 rounded-full border border-[#DED9CF] dark:border-white/15 text-xs font-medium cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-5 py-2 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
+                      >
+                        {editingMenuId ? 'Simpan Perubahan' : 'Simpan Menu'}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              )}
+
+              {/* Filter Bar */}
+              <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="w-3.5 h-3.5 text-[#8A929D] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={menuSearch}
+                    onChange={(e) => setMenuSearch(e.target.value)}
+                    placeholder="Cari nama menu atau kategori..."
+                    className="w-full pl-8 pr-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 text-xs focus:outline-none focus:border-[#16202C]"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={menuCatFilter}
+                    onChange={(e) =>
+                      setMenuCatFilter(
+                        e.target.value as 'all' | MenuCategory
+                      )
+                    }
+                    className="px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 text-xs"
+                  >
+                    <option value="all">Semua Kategori</option>
+                    {MENU_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={menuStatusFilter}
+                    onChange={(e) =>
+                      setMenuStatusFilter(
+                        e.target.value as 'all' | 'active' | 'inactive'
+                      )
+                    }
+                    className="px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 text-xs"
+                  >
+                    <option value="all">Semua Status</option>
+                    <option value="active">Tersedia</option>
+                    <option value="inactive">Nonaktif / Habis</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Catalog Table */}
+              <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-[#EFECE5] dark:border-white/10 text-[10px] uppercase tracking-[0.14em] text-[#646D78] dark:text-[#94A3B8]">
+                      <tr>
+                        <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
+                          Menu
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
+                          Kategori
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
+                          Outlet
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold text-right whitespace-nowrap">
+                          Harga
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold text-center whitespace-nowrap">
+                          Menu Cepat
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold text-center whitespace-nowrap">
+                          Status
+                        </th>
+                        <th className="py-3.5 px-4 font-semibold text-right whitespace-nowrap">
+                          Aksi
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#EFECE5] dark:divide-white/10">
+                      {filteredCatalog.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={7}
+                            className="py-8 text-center text-xs text-[#646D78]"
+                          >
+                            Tidak ada menu yang cocok dengan filter saat ini.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredCatalog.map((item) => (
+                          <tr
+                            key={item.id}
+                            className="hover:bg-[#FAF8F4]/70 dark:hover:bg-white/[0.02] transition-colors"
+                          >
+                            <td className="py-3.5 px-4 min-w-[200px]">
+                              <p className="font-medium text-[13px]">
+                                {item.name}
+                              </p>
+                              {item.description && (
+                                <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8] line-clamp-1 mt-0.5">
+                                  {item.description}
+                                </p>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 whitespace-nowrap text-[#55606E] dark:text-[#CBD5E1]">
+                              {item.category}
+                            </td>
+                            <td className="py-3.5 px-4 whitespace-nowrap text-[#55606E] dark:text-[#CBD5E1]">
+                              {item.outlets.length === 2
+                                ? 'Pemuda & AWANNCOSTA'
+                                : item.outlets[0] === 'pemuda'
+                                  ? 'RTRW Pemuda'
+                                  : 'RTRW AWANNCOSTA'}
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-mono-code font-medium tabular-nums whitespace-nowrap">
+                              {formatRupiah(item.price)}
+                            </td>
+                            <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleQuickMenu(item)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer transition-colors ${
+                                  item.isQuickMenu
+                                    ? 'bg-[#16202C] text-white dark:bg-[#F4F1EA] dark:text-[#16202C]'
+                                    : 'bg-[#FAF8F4] text-[#646D78] border border-[#E6E2DA] dark:bg-[#0E1319] dark:text-[#94A3B8] dark:border-white/10'
+                                }`}
+                              >
+                                <Zap className="w-3 h-3" />
+                                <span>
+                                  {item.isQuickMenu ? 'Di Menu Cepat' : 'Biasa'}
+                                </span>
+                              </button>
+                            </td>
+                            <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleMenuActive(item)}
+                                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer transition-colors ${
+                                  item.active
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60'
+                                    : 'bg-[#EFECE5] text-[#646D78] dark:bg-white/10 dark:text-[#94A3B8]'
+                                }`}
+                              >
+                                {item.active ? 'Tersedia' : 'Habis'}
+                              </button>
+                            </td>
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditMenu(item)}
+                                  aria-label={`Edit ${item.name}`}
+                                  className="p-1.5 rounded-lg border border-[#E6E2DA] dark:border-white/10 hover:bg-[#FAF8F4] dark:hover:bg-white/10 cursor-pointer"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMenuItem(item)}
+                                  aria-label={`Hapus ${item.name}`}
+                                  className="p-1.5 rounded-lg border border-[#E6E2DA] dark:border-white/10 text-[#646D78] hover:text-red-600 hover:border-red-300 dark:hover:text-red-400 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* TAB 6: TAMBAHAN MENU CEPAT */}
+        {activeTab === 'menu-cepat' && (() => {
+          const activePreviewOutlet: OutletId =
+            outletFilter === 'all' ? quickPreviewOutlet : outletFilter;
+
+          const quickList = menuItems.filter((m) => m.isQuickMenu);
+          const visibleQuickForPreview = quickList.filter(
+            (m) => m.active && m.outlets.includes(activePreviewOutlet)
+          );
+
+          const cq = quickCandidateSearch.trim().toLowerCase();
+          const candidateMenus = menuItems.filter(
+            (m) =>
+              !m.isQuickMenu &&
+              (!cq ||
+                m.name.toLowerCase().includes(cq) ||
+                m.category.toLowerCase().includes(cq))
+          );
+
+          return (
+            <div className="space-y-6">
+              <div>
+                <h2 className="font-serif-display text-2xl @3xl:text-[28px] font-normal">
+                  Tambahan menu cepat
+                </h2>
+                <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-1 max-w-2xl leading-relaxed">
+                  Atur tombol pintas menu yang muncul di bagian{' '}
+                  <strong>Tambah Menu Cepat</strong> pada layar Kasir POS agar
+                  kasir dapat mencatat pesanan harian hanya dengan satu ketukan.
+                </p>
+              </div>
+
+              {/* Live Cashier Preview Card */}
+              <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                      PRATINJAU TAMPILAN KASIR POS
+                    </p>
+                    <p className="text-xs font-medium mt-0.5">
+                      Tambah Menu Cepat · Outlet{' '}
+                      {activePreviewOutlet === 'pemuda'
+                        ? 'RTRW Pemuda'
+                        : 'RTRW AWANNCOSTA'}
+                    </p>
+                  </div>
+
+                  {outletFilter === 'all' && (
+                    <div className="inline-flex items-center p-1 rounded-full bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10">
+                      {(
+                        [
+                          { id: 'pemuda', label: 'Pemuda' },
+                          { id: 'awanncosta', label: 'AWANNCOSTA' },
+                        ] as const
+                      ).map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => setQuickPreviewOutlet(o.id)}
+                          className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
+                            activePreviewOutlet === o.id
+                              ? 'bg-[#16202C] text-white dark:bg-[#F4F1EA] dark:text-[#16202C]'
+                              : 'text-[#646D78] dark:text-[#94A3B8]'
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-4">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <span className="text-xs font-medium">
+                      Tambah Menu Cepat
+                    </span>
+                    <span className="text-[11px] text-[#646D78]">
+                      Kosongkan
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {visibleQuickForPreview.length === 0 ? (
+                      <span className="text-xs text-[#646D78]">
+                        Belum ada item menu cepat yang aktif untuk outlet ini.
+                      </span>
+                    ) : (
+                      visibleQuickForPreview.map((item) => (
+                        <span
+                          key={item.id}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 text-xs"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>{item.name}</span>
+                          <span className="font-mono-code text-[11px] text-[#646D78]">
+                            {Math.round(item.price / 1000)}k
+                          </span>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 2-Column Management Grid */}
+              <div className="grid grid-cols-1 @5xl:grid-cols-12 gap-6 items-start">
+                {/* Left: Active Quick Menu Items + Reorder + Inline Price */}
+                <div className="@5xl:col-span-7 rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 overflow-hidden">
+                  <div className="p-5 border-b border-[#EFECE5] dark:border-white/10 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-serif-display text-xl">
+                        Daftar Menu Cepat ({quickList.length})
+                      </h3>
+                      <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                        Atur urutan tombol, harga, atau keluarkan dari daftar
+                        menu cepat.
+                      </p>
+                    </div>
+                  </div>
+
+                  {quickList.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-[#646D78]">
+                      Belum ada menu cepat. Pilih dari daftar Menu Keseluruhan di
+                      sebelah kanan atau buat item baru.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-[#EFECE5] dark:divide-white/10">
+                      {quickList.map((item, idx) => (
+                        <div
+                          key={item.id}
+                          className="p-4 flex flex-wrap items-center justify-between gap-3"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex flex-col gap-0.5 shrink-0">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() =>
+                                  handleMoveQuickMenu(item.id, 'up')
+                                }
+                                aria-label="Geser ke atas"
+                                className="p-1 rounded border border-[#E6E2DA] dark:border-white/10 disabled:opacity-30 hover:bg-[#FAF8F4] dark:hover:bg-white/10 cursor-pointer"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === quickList.length - 1}
+                                onClick={() =>
+                                  handleMoveQuickMenu(item.id, 'down')
+                                }
+                                aria-label="Geser ke bawah"
+                                className="p-1 rounded border border-[#E6E2DA] dark:border-white/10 disabled:opacity-30 hover:bg-[#FAF8F4] dark:hover:bg-white/10 cursor-pointer"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-medium truncate">
+                                  {item.name}
+                                </p>
+                                {!item.active && (
+                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                                    Habis
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                                {item.category} ·{' '}
+                                {item.outlets.length === 2
+                                  ? 'Pemuda & AWANNCOSTA'
+                                  : item.outlets[0] === 'pemuda'
+                                    ? 'Pemuda'
+                                    : 'AWANNCOSTA'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono-code text-xs font-semibold tabular-nums px-2.5 py-1 rounded-lg bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10">
+                              {formatRupiah(item.price)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleQuickMenu(item)}
+                              className="px-3 py-1.5 rounded-full border border-[#DED9CF] dark:border-white/15 text-[11px] font-medium hover:bg-[#FAF8F4] dark:hover:bg-white/10 cursor-pointer"
+                            >
+                              Keluarkan
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right: Quick Add New + Pick from Menu Keseluruhan */}
+                <div className="@5xl:col-span-5 space-y-5">
+                  <form
+                    onSubmit={handleCreateQuickMenu}
+                    className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 space-y-3.5"
+                  >
+                    <div>
+                      <h3 className="font-serif-display text-xl">
+                        Buat Menu Cepat Baru
+                      </h3>
+                      <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                        Menu baru otomatis tersimpan ke Menu Keseluruhan dan
+                        langsung aktif di Tambah Menu Cepat Kasir.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium mb-1">
+                        Nama menu
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={quickNewName}
+                        onChange={(e) => setQuickNewName(e.target.value)}
+                        placeholder="cth: Es Kopi Pandan"
+                        className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium mb-1">
+                          Kategori
+                        </label>
+                        <select
+                          value={quickNewCategory}
+                          onChange={(e) =>
+                            setQuickNewCategory(e.target.value as MenuCategory)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                        >
+                          {MENU_CATEGORIES.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium mb-1">
+                          Harga (Rp)
+                        </label>
+                        <input
+                          type="number"
+                          min={1000}
+                          step={500}
+                          required
+                          value={quickNewPrice}
+                          onChange={(e) =>
+                            setQuickNewPrice(Number(e.target.value) || 0)
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 font-mono-code text-xs tabular-nums"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-4 pt-1">
+                      {(
+                        [
+                          { id: 'pemuda', label: 'Pemuda' },
+                          { id: 'awanncosta', label: 'AWANNCOSTA' },
+                        ] as const
+                      ).map((o) => (
+                        <label
+                          key={o.id}
+                          className="inline-flex items-center gap-1.5 text-xs cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={quickNewOutlets.includes(o.id)}
+                            onChange={() =>
+                              toggleFormOutlet(
+                                quickNewOutlets,
+                                setQuickNewOutlets,
+                                o.id
+                              )
+                            }
+                            className="rounded border-[#DED9CF]"
+                          />
+                          <span>{o.label}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 px-4 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+                    >
+                      + Tambah ke Menu Cepat
+                    </button>
+                  </form>
+
+                  {/* Pick from Menu Keseluruhan */}
+                  <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 space-y-3">
+                    <div>
+                      <h3 className="font-serif-display text-xl">
+                        Ambil dari Menu Keseluruhan
+                      </h3>
+                      <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                        Masukkan menu yang sudah ada ke daftar cepat kasir.
+                      </p>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-[#8A929D] absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={quickCandidateSearch}
+                        onChange={(e) =>
+                          setQuickCandidateSearch(e.target.value)
+                        }
+                        placeholder="Cari menu yang belum masuk..."
+                        className="w-full pl-8 pr-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 text-xs focus:outline-none focus:border-[#16202C]"
+                      />
+                    </div>
+
+                    <div className="divide-y divide-[#EFECE5] dark:divide-white/10 max-h-64 overflow-y-auto border border-[#EFECE5] dark:border-white/10 rounded-xl">
+                      {candidateMenus.length === 0 ? (
+                        <p className="p-4 text-center text-xs text-[#646D78]">
+                          Semua menu yang sesuai sudah berada di Menu Cepat.
+                        </p>
+                      ) : (
+                        candidateMenus.map((item) => (
+                          <div
+                            key={item.id}
+                            className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium truncate">
+                                {item.name}
+                              </p>
+                              <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8] font-mono-code">
+                                {formatRupiah(item.price)} · {item.category}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleQuickMenu(item)}
+                              className="px-3 py-1 rounded-full bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-[11px] font-semibold hover:bg-[#16202C] hover:text-white dark:hover:bg-[#F4F1EA] dark:hover:text-[#16202C] transition-colors shrink-0 cursor-pointer"
+                            >
+                              + Masukkan
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* TAB 7: WARGA SETIA */}
         {activeTab === 'warga' && (
           <div className="space-y-4">
             <div className="flex flex-col @3xl:flex-row @3xl:items-center justify-between gap-3">
@@ -2636,7 +3684,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       </div>
                       <div>
                         <label className="block text-xs font-medium mb-1">
-                          Nama singkat (tab kasir)
+                          Nama singkat (Login Staf &amp; Kasir)
                         </label>
                         <input
                           type="text"
@@ -2775,6 +3823,407 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </form>
         )}
 
+        {/* TAB: LOGIN STAF & KARTU MEMBER UI */}
+        {activeTab === 'staf-member-ui' && (
+          <form onSubmit={handleSaveUiConfig} className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-serif-display text-2xl">
+                  Teks Halaman Login Staf, Kasir &amp; Kartu Member
+                </h3>
+                <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
+                  Sesuaikan judul, label tombol, dan teks tampilan pada halaman Masuk Staf, Layar Kasir POS, serta Tab Kartu Member.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResetUiDefaults}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-[#DED9CF] dark:border-white/15 bg-white dark:bg-[#161E29] text-xs font-medium hover:bg-[#FAF8F4] dark:hover:bg-[#1E293B] transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Kembalikan Default</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 @5xl:grid-cols-12 gap-6 items-start">
+              {/* Halaman Login Staf & Layar Kasir POS */}
+              <div className="@5xl:col-span-6 rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-6 space-y-4">
+                <div>
+                  <h4 className="font-serif-display text-xl">
+                    Halaman Login Staf &amp; Layar Kasir
+                  </h4>
+                  <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                    Kartu pilihan outlet di halaman Masuk Staf otomatis tersinkron dengan data outlet di tab Konten &amp; Foto Beranda.
+                  </p>
+                </div>
+
+                {/* Live Synced Outlet Cards Info */}
+                <div className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#EFECE5] dark:border-white/10 p-3.5 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                      PILIHAN OUTLET TERSINKRON DARI BERANDA
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('konten-beranda')}
+                      className="text-[11px] font-semibold text-[#16202C] dark:text-[#F4F1EA] underline cursor-pointer"
+                    >
+                      Ubah di Konten &amp; Foto Beranda →
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {outlets.map((o) => (
+                      <div
+                        key={o.id}
+                        className="rounded-lg bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 px-3 py-2"
+                      >
+                        <p className="font-serif-display text-sm font-medium">
+                          {o.shortName}
+                        </p>
+                        <p className="text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                          {o.area}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Badge header Login Staf
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.staffHeaderBadge}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, staffHeaderBadge: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase tracking-wider"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Judul halaman Login Staf
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.staffLoginTitle}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, staffLoginTitle: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1.5">
+                    Subjudul halaman Login Staf
+                  </label>
+                  <input
+                    type="text"
+                    value={uiDraft.staffLoginSubtitle}
+                    onChange={(e) =>
+                      setUiDraft({ ...uiDraft, staffLoginSubtitle: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Label pilih outlet
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.staffOutletLabel}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, staffOutletLabel: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Teks tombol masuk staf
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.staffLoginButtonText}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, staffLoginButtonText: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-[#EFECE5] dark:border-white/10 space-y-3">
+                  <p className="text-[10px] font-semibold tracking-[0.18em] uppercase text-[#646D78] dark:text-[#94A3B8]">
+                    LAYAR KASIR POS
+                  </p>
+
+                  <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5">
+                        Badge header Kasir
+                      </label>
+                      <input
+                        type="text"
+                        value={uiDraft.cashierHeaderBadge}
+                        onChange={(e) =>
+                          setUiDraft({ ...uiDraft, cashierHeaderBadge: e.target.value })
+                        }
+                        className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase tracking-wider"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5">
+                        Judul Langkah 1 Kasir
+                      </label>
+                      <input
+                        type="text"
+                        value={uiDraft.cashierStep1Title}
+                        onChange={(e) =>
+                          setUiDraft({ ...uiDraft, cashierStep1Title: e.target.value })
+                        }
+                        className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5">
+                        Judul Langkah 2 Kasir
+                      </label>
+                      <input
+                        type="text"
+                        value={uiDraft.cashierStep2Title}
+                        onChange={(e) =>
+                          setUiDraft({ ...uiDraft, cashierStep2Title: e.target.value })
+                        }
+                        className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5">
+                        Teks tombol simpan transaksi
+                      </label>
+                      <input
+                        type="text"
+                        value={uiDraft.cashierSubmitButtonText}
+                        onChange={(e) =>
+                          setUiDraft({
+                            ...uiDraft,
+                            cashierSubmitButtonText: e.target.value,
+                          })
+                        }
+                        className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Teks panduan saat belum pilih pelanggan
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.cashierEmptyPrompt}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, cashierEmptyPrompt: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Tab Kartu Member & Fisik Kartu Stempel */}
+              <div className="@5xl:col-span-6 rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-6 space-y-4">
+                <div>
+                  <h4 className="font-serif-display text-xl">
+                    Tab Kartu Member &amp; Tampilan Kartu
+                  </h4>
+                  <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                    Perubahan pada identitas kartu langsung diterapkan ke kartu stempel di halaman Member, Beranda, dan Kasir.
+                  </p>
+                </div>
+
+                {/* Live StampCard Preview */}
+                <div className="rounded-2xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#EFECE5] dark:border-white/10 p-4">
+                  <p className="text-[10px] font-semibold tracking-[0.18em] uppercase text-[#646D78] dark:text-[#94A3B8] mb-3">
+                    PRATINJAU KARTU STEMPEL
+                  </p>
+                  <StampCard
+                    cardNumber="01"
+                    holderName="SEKAR AYU"
+                    serialCode="RTRW-BAF6F4F7"
+                    stamps={7}
+                    interactive={false}
+                    compact={true}
+                    brandTitle={uiDraft.cardBrandTitle}
+                    cardSubtitle={uiDraft.cardSubtitle}
+                    cardNumberLabel={uiDraft.cardNumberLabel}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Judul merek di kartu
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.cardBrandTitle}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, cardBrandTitle: e.target.value })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Subjudul kartu
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.cardSubtitle}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, cardSubtitle: e.target.value })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Label nomor kartu
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.cardNumberLabel}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, cardNumberLabel: e.target.value })
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Badge header Kartu Member
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.memberHeaderBadge}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, memberHeaderBadge: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase tracking-wider"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Kata sapaan sebelum nama
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.memberGreetingPrefix}
+                      onChange={(e) =>
+                        setUiDraft({
+                          ...uiDraft,
+                          memberGreetingPrefix: e.target.value,
+                        })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs uppercase"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Kalimat sisa stempel (setelah angka)
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.memberProgressSuffix}
+                      onChange={(e) =>
+                        setUiDraft({
+                          ...uiDraft,
+                          memberProgressSuffix: e.target.value,
+                        })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5">
+                      Kalimat saat 10/10 penuh
+                    </label>
+                    <input
+                      type="text"
+                      value={uiDraft.memberCardFullText}
+                      onChange={(e) =>
+                        setUiDraft({ ...uiDraft, memberCardFullText: e.target.value })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1.5">
+                    Keterangan aturan scan QR di kotak kartu
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={uiDraft.memberPosNotice}
+                    onChange={(e) =>
+                      setUiDraft({ ...uiDraft, memberPosNotice: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs leading-relaxed"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1.5">
+                    Teks tombol QR ke Kasir
+                  </label>
+                  <input
+                    type="text"
+                    value={uiDraft.memberQrCtaText}
+                    onChange={(e) =>
+                      setUiDraft({ ...uiDraft, memberQrCtaText: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                className="px-6 py-3 rounded-full bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer whitespace-nowrap"
+              >
+                Simpan Pengaturan Tampilan
+              </button>
+              {uiSaved && (
+                <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+                  <Check className="w-3.5 h-3.5" />
+                  Tersimpan ke Login Staf, Kasir &amp; Kartu Member
+                </span>
+              )}
+            </div>
+          </form>
+        )}
+
         {/* TAB 10: AKUN KASIR */}
         {activeTab === 'akun-kasir' && (
           <div className="space-y-4">
@@ -2784,7 +4233,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   Akun staf &amp; kasir
                 </h3>
                 <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
-                  Kelola akses kasir untuk RTRW Pemuda dan RTRW AWANNCOSTA.
+                  Kelola akun, outlet bertugas, dan kata sandi untuk admin maupun kasir RTRW Pemuda &amp; RTRW AWANNCOSTA.
                 </p>
               </div>
               <button
@@ -2800,7 +4249,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             {showAddStaff && (
               <form
                 onSubmit={handleCreateStaff}
-                className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 grid grid-cols-1 @3xl:grid-cols-4 gap-3 items-end"
+                className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 p-5 grid grid-cols-1 @3xl:grid-cols-5 gap-3 items-end"
               >
                 <div>
                   <label className="block text-xs font-medium mb-1">Nama</label>
@@ -2837,6 +4286,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     <option value="awanncosta">RTRW AWANNCOSTA</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1">
+                    Kata sandi (opsional)
+                  </label>
+                  <input
+                    type="password"
+                    value={newStaffPassword}
+                    onChange={(e) => setNewStaffPassword(e.target.value)}
+                    placeholder="Kosongkan = bebas"
+                    className="w-full px-3 py-2 rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-xs"
+                  />
+                </div>
                 <button
                   type="submit"
                   className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
@@ -2848,43 +4309,149 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             )}
 
             <div className="rounded-2xl bg-white dark:bg-[#161E29] border border-[#E6E2DA] dark:border-white/10 divide-y divide-[#EFECE5] dark:divide-white/10">
-              {staffAccounts.map((acc) => (
-                <div
-                  key={acc.id}
-                  className="p-4 @3xl:px-5 flex flex-wrap items-center justify-between gap-4"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-sm">{acc.name}</p>
-                      <span className="font-mono-code text-[11px] text-[#646D78] dark:text-[#94A3B8]">
-                        @{acc.username}
-                      </span>
-                    </div>
-                    <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
-                      {acc.roleLabel} · Aktif terakhir: {acc.lastActive}
-                    </p>
-                  </div>
+              {staffAccounts.map((acc) => {
+                const isEditing = editingStaffId === acc.id;
+                const hasCustomPassword =
+                  Boolean(acc.password) && acc.password !== '••••••';
 
-                  <div className="flex items-center gap-4">
-                    {acc.role === 'kasir' && (
-                      <span className="font-mono-code text-xs text-[#55606E] dark:text-[#CBD5E1] tabular-nums">
-                        {acc.transactionsToday} tx hari ini
-                      </span>
+                return (
+                  <div key={acc.id} className="p-4 @3xl:px-5 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium text-sm">{acc.name}</p>
+                          <span className="font-mono-code text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                            @{acc.username}
+                          </span>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-md font-medium ${
+                              hasCustomPassword
+                                ? 'bg-[#EFECE5] dark:bg-white/10 text-[#16202C] dark:text-[#E2E8F0]'
+                                : 'bg-[#FAF8F4] dark:bg-[#0E1319] text-[#646D78] dark:text-[#94A3B8] border border-[#E6E2DA] dark:border-white/10'
+                            }`}
+                          >
+                            {hasCustomPassword
+                              ? 'Sandi khusus aktif'
+                              : 'Sandi bebas (default)'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
+                          {acc.roleLabel} · Aktif terakhir: {acc.lastActive}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2.5">
+                        {acc.role === 'kasir' && (
+                          <span className="font-mono-code text-xs text-[#55606E] dark:text-[#CBD5E1] tabular-nums mr-1">
+                            {acc.transactionsToday} tx hari ini
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            isEditing
+                              ? setEditingStaffId(null)
+                              : openEditStaff(acc)
+                          }
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-full border border-[#DED9CF] dark:border-white/15 bg-[#FAF8F4] dark:bg-[#0E1319] text-[11px] font-medium hover:border-[#16202C] dark:hover:border-white transition-colors cursor-pointer"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>{isEditing ? 'Tutup' : 'Edit'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onToggleStaffActive(acc.id)}
+                          className={`px-3 py-1 rounded-full text-[11px] font-semibold cursor-pointer transition-colors ${
+                            acc.active
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60'
+                              : 'bg-[#EFECE5] text-[#646D78] dark:bg-white/10 dark:text-[#94A3B8]'
+                          }`}
+                        >
+                          {acc.active ? 'Aktif' : 'Nonaktif'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isEditing && (
+                      <form
+                        onSubmit={handleSaveEditStaff}
+                        className="rounded-xl bg-[#FAF8F4] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-4 grid grid-cols-1 @3xl:grid-cols-5 gap-3 items-end"
+                      >
+                        <div>
+                          <label className="block text-[11px] font-medium mb-1">
+                            Nama staf
+                          </label>
+                          <input
+                            type="text"
+                            value={editStaffName}
+                            onChange={(e) => setEditStaffName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium mb-1">
+                            Username
+                          </label>
+                          <input
+                            type="text"
+                            value={editStaffUsername}
+                            onChange={(e) => setEditStaffUsername(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs font-mono-code"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium mb-1">
+                            Outlet bertugas
+                          </label>
+                          <select
+                            value={editStaffOutlet}
+                            disabled={acc.role === 'admin_pusat'}
+                            onChange={(e) =>
+                              setEditStaffOutlet(
+                                e.target.value as OutletId | 'all'
+                              )
+                            }
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs disabled:opacity-60"
+                          >
+                            {acc.role === 'admin_pusat' && (
+                              <option value="all">Semua Outlet (Pusat)</option>
+                            )}
+                            <option value="pemuda">RTRW Pemuda</option>
+                            <option value="awanncosta">RTRW AWANNCOSTA</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium mb-1">
+                            Kata sandi baru
+                          </label>
+                          <input
+                            type="password"
+                            value={editStaffPassword}
+                            onChange={(e) => setEditStaffPassword(e.target.value)}
+                            placeholder="Kosongkan jika tetap"
+                            className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#161E29] border border-[#DED9CF] dark:border-white/15 text-xs"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="submit"
+                            className="flex-1 py-2 px-3 rounded-lg bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
+                          >
+                            Simpan
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingStaffId(null)}
+                            className="py-2 px-3 rounded-lg border border-[#DED9CF] dark:border-white/15 text-xs font-medium cursor-pointer"
+                          >
+                            Batal
+                          </button>
+                        </div>
+                      </form>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => onToggleStaffActive(acc.id)}
-                      className={`px-3 py-1 rounded-full text-[11px] font-semibold cursor-pointer transition-colors ${
-                        acc.active
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60'
-                          : 'bg-[#EFECE5] text-[#646D78] dark:bg-white/10 dark:text-[#94A3B8]'
-                      }`}
-                    >
-                      {acc.active ? 'Aktif' : 'Nonaktif'}
-                    </button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -2929,6 +4496,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               stamps={inspectedMember.stamps}
               stampDates={inspectedMember.stampDates}
               compact={true}
+              brandTitle={uiConfig.cardBrandTitle}
+              cardSubtitle={uiConfig.cardSubtitle}
+              cardNumberLabel={uiConfig.cardNumberLabel}
             />
 
             <div className="grid grid-cols-2 gap-3 text-xs bg-white dark:bg-[#0E1319] p-4 rounded-xl border border-[#E6E2DA] dark:border-white/10">

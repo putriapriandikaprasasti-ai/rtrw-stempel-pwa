@@ -13,6 +13,9 @@ interface StampCardProps {
   animatingSlot?: number | null;
   animationNonce?: number;
   justStampedLabel?: string | null;
+  brandTitle?: string;
+  cardSubtitle?: string;
+  cardNumberLabel?: string;
 }
 
 function CoffeeCupIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -57,6 +60,9 @@ export const StampCard: React.FC<StampCardProps> = ({
   animatingSlot = null,
   animationNonce = 0,
   justStampedLabel = null,
+  brandTitle = 'RTRW',
+  cardSubtitle = 'KARTU STEMPEL WARGA',
+  cardNumberLabel = 'KARTU NO.',
 }) => {
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [activeAnimSlot, setActiveAnimSlot] = useState<number | null>(null);
@@ -167,16 +173,16 @@ export const StampCard: React.FC<StampCardProps> = ({
         <div className="relative z-10 flex items-start justify-between gap-4">
           <div>
             <div className="font-serif-display text-2xl sm:text-[26px] font-bold tracking-tight text-[#16202C] dark:text-[#F4F1EA] leading-none">
-              RTRW
+              {brandTitle || 'RTRW'}
             </div>
             <div className="mt-1.5 text-[9px] sm:text-[10px] font-semibold tracking-[0.24em] text-[#4B5563] dark:text-[#A3B1C2] uppercase">
-              KARTU STEMPEL WARGA
+              {cardSubtitle || 'KARTU STEMPEL WARGA'}
             </div>
           </div>
 
           <div className="text-right">
             <div className="text-[9px] font-semibold tracking-[0.22em] text-[#55606E] dark:text-[#94A3B8] uppercase">
-              KARTU NO.
+              {cardNumberLabel || 'KARTU NO.'}
             </div>
             <div className="font-mono-code text-sm font-semibold text-[#16202C] dark:text-[#F4F1EA] tabular-nums mt-0.5">
               {cardNumber}

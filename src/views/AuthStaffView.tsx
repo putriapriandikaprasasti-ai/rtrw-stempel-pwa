@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { ArrowLeft, MapPin, Moon, Sun } from 'lucide-react';
-import { OutletId, OutletInfo, StaffAccount } from '../types';
+import { OutletId, OutletInfo, StaffAccount, StaffMemberUiConfig } from '../types';
 
 interface AuthStaffViewProps {
   staffAccounts: StaffAccount[];
   outlets: OutletInfo[];
+  uiConfig: StaffMemberUiConfig;
   darkMode: boolean;
   onToggleDark: () => void;
   onBackLanding: () => void;
@@ -14,6 +15,7 @@ interface AuthStaffViewProps {
 export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
   staffAccounts,
   outlets,
+  uiConfig,
   darkMode,
   onToggleDark,
   onBackLanding,
@@ -28,7 +30,7 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
     e.preventDefault();
     setError('');
     if (!username.trim() || !password.trim()) {
-      setError('Masukkan username dan kata sandi, atau pilih Akun Demo di bawah.');
+      setError('Masukkan username dan kata sandi staf Anda.');
       return;
     }
     const found = staffAccounts.find(
@@ -39,18 +41,11 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
       setError('Akun staf tidak ditemukan atau sedang nonaktif.');
       return;
     }
-    onLoginStaff(found, selectedOutlet);
-  };
-
-  const quickDemoLogin = (
-    staffId: string,
-    outletOverride: OutletId
-  ) => {
-    const found = staffAccounts.find((s) => s.id === staffId);
-    if (found) {
-      setSelectedOutlet(outletOverride);
-      onLoginStaff(found, outletOverride);
+    if (found.password && found.password !== '••••••' && password !== found.password) {
+      setError('Username atau kata sandi tidak cocok.');
+      return;
     }
+    onLoginStaff(found, selectedOutlet);
   };
 
   const isReady = username.trim().length > 0 && password.trim().length > 0;
@@ -69,7 +64,7 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
               RTRW
             </span>
             <span className="text-[10px] font-medium tracking-[0.22em] text-[#5B6470] dark:text-[#94A3B8] uppercase">
-              RUANG STAF
+              {uiConfig.staffHeaderBadge}
             </span>
           </button>
 
@@ -96,10 +91,10 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
 
         <div className="mt-6 space-y-2">
           <h1 className="font-serif-display text-4xl font-normal">
-            Masuk staf
+            {uiConfig.staffLoginTitle}
           </h1>
           <p className="text-sm text-[#55606E] dark:text-[#A3B1C2]">
-            Kasir wajib memilih outlet tempat bertugas hari ini.
+            {uiConfig.staffLoginSubtitle}
           </p>
         </div>
 
@@ -110,9 +105,9 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
         >
           <div>
             <label className="block text-xs font-medium text-[#16202C] dark:text-[#E2E8F0] mb-2">
-              Outlet
+              {uiConfig.staffOutletLabel}
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {outlets.map((outlet) => {
                 const active = selectedOutlet === outlet.id;
                 return (
@@ -120,19 +115,21 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
                     key={outlet.id}
                     type="button"
                     onClick={() => setSelectedOutlet(outlet.id)}
-                    className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    className={`w-full min-w-0 p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1.5 overflow-hidden ${
                       active
                         ? 'border-[#16202C] dark:border-[#F4F1EA] bg-[#FAF8F4] dark:bg-[#1E293B] ring-1 ring-[#16202C] dark:ring-[#F4F1EA]'
                         : 'border-[#E6E2DA] dark:border-white/10 hover:border-[#B8B2A6]'
                     }`}
                   >
-                    <p className="font-serif-display text-base font-medium">
+                    <p className="font-serif-display text-base font-medium leading-snug break-words">
                       {outlet.shortName}
                     </p>
-                    <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-[#646D78] dark:text-[#94A3B8]">
-                      <MapPin className="w-3 h-3 shrink-0" />
-                      <span className="truncate">{outlet.area}</span>
-                    </p>
+                    <div className="flex items-start gap-1.5 min-w-0 text-[11px] leading-snug text-[#646D78] dark:text-[#94A3B8]">
+                      <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span className="min-w-0 break-words">
+                        {outlet.area}
+                      </span>
+                    </div>
                   </button>
                 );
               })}
@@ -177,46 +174,9 @@ export const AuthStaffView: React.FC<AuthStaffViewProps> = ({
                 : 'bg-[#8E959E] text-white hover:bg-[#16202C]'
             }`}
           >
-            Masuk
+            {uiConfig.staffLoginButtonText}
           </button>
         </form>
-
-        {/* Demo Accounts Box */}
-        <div className="mt-5 rounded-2xl border border-dashed border-[#D8D3C8] dark:border-white/15 p-4">
-          <p className="text-[10px] font-semibold tracking-[0.18em] uppercase text-[#646D78] dark:text-[#94A3B8] mb-3">
-            AKUN DEMO
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => quickDemoLogin('stf-dimas', 'pemuda')}
-              className="px-3 py-1.5 rounded-full bg-white dark:bg-[#161E29] border border-[#E2DDD4] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
-            >
-              Kasir Pemuda
-            </button>
-            <button
-              type="button"
-              onClick={() => quickDemoLogin('stf-sinta', 'awanncosta')}
-              className="px-3 py-1.5 rounded-full bg-white dark:bg-[#161E29] border border-[#E2DDD4] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
-            >
-              Kasir AWANNCOSTA
-            </button>
-            <button
-              type="button"
-              onClick={() => quickDemoLogin('stf-admin-pemuda', 'pemuda')}
-              className="px-3 py-1.5 rounded-full bg-white dark:bg-[#161E29] border border-[#E2DDD4] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
-            >
-              Admin Pemuda
-            </button>
-            <button
-              type="button"
-              onClick={() => quickDemoLogin('stf-admin-pusat', 'pemuda')}
-              className="px-3 py-1.5 rounded-full bg-white dark:bg-[#161E29] border border-[#E2DDD4] dark:border-white/15 text-xs font-medium hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors cursor-pointer"
-            >
-              Admin Pusat
-            </button>
-          </div>
-        </div>
       </main>
     </div>
   );

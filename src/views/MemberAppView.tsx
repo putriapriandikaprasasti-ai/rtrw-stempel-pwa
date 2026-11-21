@@ -11,7 +11,6 @@ import {
   Moon,
   QrCode,
   Receipt,
-  RotateCcw,
   Sparkles,
   Sun,
   Ticket,
@@ -25,7 +24,9 @@ import {
   Member,
   MemberTab,
   OutletId,
+  OutletInfo,
   ProgramRules,
+  StaffMemberUiConfig,
   Transaction,
   Voucher,
 } from '../types';
@@ -42,11 +43,12 @@ interface MemberAppViewProps {
   member: Member;
   allMembers: Member[];
   transactions: Transaction[];
+  outlets: OutletInfo[];
   rules: ProgramRules;
+  uiConfig: StaffMemberUiConfig;
   darkMode: boolean;
   onToggleDark: () => void;
   onLogout: () => void;
-  onSimulateCashierWithMember: (memberId: string) => void;
   lastStampEvent?: StampEventPayload | null;
 }
 
@@ -54,13 +56,19 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
   member,
   allMembers,
   transactions,
+  outlets,
   rules,
+  uiConfig,
   darkMode,
   onToggleDark,
   onLogout,
-  onSimulateCashierWithMember,
   lastStampEvent = null,
 }) => {
+  const getOutletShort = (id: OutletId) =>
+    outlets.find((o) => o.id === id)?.shortName ||
+    (id === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA');
+  const getOutletFull = (id: OutletId) =>
+    outlets.find((o) => o.id === id)?.name || `RTRW ${getOutletShort(id)}`;
   const [activeTab, setActiveTab] = useState<MemberTab>('kartu');
   const [voucherFilter, setVoucherFilter] = useState<'active' | 'used'>('active');
   const [outletFilter, setOutletFilter] = useState<'all' | OutletId>('all');
@@ -68,7 +76,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
-  // Live stamping animation state (triggered from Kasir POS or replay)
+  // Live stamping animation state (triggered when awarded from Kasir POS)
   const [animatingSlot, setAnimatingSlot] = useState<number | null>(null);
   const [animationNonce, setAnimationNonce] = useState(0);
   const [justStampedLabel, setJustStampedLabel] = useState<string | null>(null);
@@ -90,7 +98,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
       setAnimatingSlot(lastStampEvent.slot);
       setAnimationNonce((n) => n + 1);
       setJustStampedLabel(
-        `+1 Stempel · RTRW ${lastStampEvent.outlet === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA'}`
+        `+1 Stempel · ${getOutletFull(lastStampEvent.outlet)}`
       );
       setRecentPosStamp({
         slot: lastStampEvent.slot,
@@ -99,13 +107,6 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
       });
     }
   }, [lastStampEvent, member.id]);
-
-  const handleReplayStampAnimation = () => {
-    if (member.stamps <= 0) return;
-    setAnimatingSlot(member.stamps);
-    setAnimationNonce((n) => n + 1);
-    setJustStampedLabel(`Stempel #${member.stamps}`);
-  };
 
   const activeVouchers = member.vouchers.filter((v) => v.status === 'active');
   const usedVouchers = member.vouchers.filter((v) => v.status !== 'active');
@@ -153,7 +154,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
               RTRW
             </span>
             <span className="text-[10px] font-medium tracking-[0.22em] text-[#5B6470] dark:text-[#94A3B8] uppercase">
-              KARTU STEMPEL
+              {uiConfig.memberHeaderBadge}
             </span>
           </div>
 
@@ -186,7 +187,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
             {/* Greeting */}
             <div>
               <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-[#646D78] dark:text-[#94A3B8]">
-                HALO,
+                {uiConfig.memberGreetingPrefix}
               </p>
               <h1 className="font-serif-display text-4xl font-normal mt-1">
                 {member.firstName}.
@@ -204,6 +205,9 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
               animatingSlot={animatingSlot}
               animationNonce={animationNonce}
               justStampedLabel={justStampedLabel}
+              brandTitle={uiConfig.cardBrandTitle}
+              cardSubtitle={uiConfig.cardSubtitle}
+              cardNumberLabel={uiConfig.cardNumberLabel}
             />
 
             {/* Progress Bar */}
@@ -211,8 +215,8 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
               <div className="flex items-baseline justify-between gap-4">
                 <p className="font-serif-display text-lg leading-snug">
                   {remainingToFree > 0
-                    ? `${remainingToFree} pembelian lagi menuju 1 minuman gratis`
-                    : 'Kartu penuh! Tukarkan 1 minuman gratis di kasir'}
+                    ? `${remainingToFree} ${uiConfig.memberProgressSuffix}`
+                    : uiConfig.memberCardFullText}
                 </p>
                 <span className="font-mono-code text-xs font-medium text-[#5B6470] dark:text-[#94A3B8] tabular-nums shrink-0">
                   {member.stamps}/10
@@ -233,10 +237,8 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                   <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-900 dark:text-emerald-200">
                     <Sparkles className="w-3.5 h-3.5 shrink-0" />
                     <span>
-                      Stempel #{recentPosStamp.slot} baru diterima dari Kasir RTRW{' '}
-                      {recentPosStamp.outlet === 'pemuda'
-                        ? 'Pemuda'
-                        : 'AWANNCOSTA'}
+                      Stempel #{recentPosStamp.slot} baru diterima dari Kasir{' '}
+                      {getOutletFull(recentPosStamp.outlet)}
                     </span>
                   </div>
                   {recentPosStamp.voucher && (
@@ -256,32 +258,18 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
 
               <div className="flex items-start justify-between gap-3">
                 <p className="text-xs leading-relaxed text-[#55606E] dark:text-[#A3B1C2]">
-                  Stempel hanya ditambahkan setelah transaksi melalui{' '}
-                  <strong className="text-[#16202C] dark:text-[#F4F1EA]">
-                    scan QR atau input manual di Kasir POS
-                  </strong>
-                  .
+                  {uiConfig.memberPosNotice}
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center">
                 <button
                   type="button"
                   onClick={() => setActiveTab('qr')}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer whitespace-nowrap"
+                  className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer whitespace-nowrap"
                 >
                   <QrCode className="w-3.5 h-3.5" />
-                  <span>Tunjukkan QR ke Kasir</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleReplayStampAnimation}
-                  disabled={member.stamps <= 0}
-                  title="Putar ulang animasi pada stempel terakhir"
-                  className="inline-flex items-center justify-center gap-1.5 py-2.5 px-3.5 rounded-xl border border-[#DED9CF] dark:border-white/15 text-xs font-medium hover:bg-[#FAF8F4] dark:hover:bg-white/5 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Putar Ulang Animasi</span>
+                  <span>{uiConfig.memberQrCtaText}</span>
                 </button>
               </div>
             </div>
@@ -476,7 +464,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                         <span>
                           {isActive
                             ? `Berlaku s/d ${v.expiresAt}`
-                            : `Dipakai ${v.usedAt} · RTRW ${v.usedOutlet === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA'}`}
+                            : `Dipakai ${v.usedAt}${v.usedOutlet ? ` · ${getOutletFull(v.usedOutlet)}` : ''}`}
                         </span>
                         <span className="font-medium text-[#16202C] dark:text-white">
                           {isActive ? 'Tunjukkan QR →' : 'Detail →'}
@@ -504,10 +492,9 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
             <div className="flex items-center gap-1.5">
               {(
                 [
-                  { id: 'all', label: 'Semua Outlet' },
-                  { id: 'pemuda', label: 'Pemuda' },
-                  { id: 'awanncosta', label: 'AWANNCOSTA' },
-                ] as const
+                  { id: 'all' as const, label: 'Semua Outlet' },
+                  ...outlets.map((o) => ({ id: o.id, label: o.shortName })),
+                ]
               ).map((f) => (
                 <button
                   key={f.id}
@@ -547,8 +534,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                         {tx.items.join(', ')}
                       </p>
                       <p className="text-xs text-[#646D78] dark:text-[#94A3B8] mt-0.5">
-                        {tx.date} · {tx.time} · RTRW{' '}
-                        {tx.outlet === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA'}
+                        {tx.date} · {tx.time} · {getOutletFull(tx.outlet)}
                       </p>
                     </div>
 
@@ -620,10 +606,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                           )}
                         </p>
                         <p className="text-xs text-[#646D78] dark:text-[#94A3B8]">
-                          Outlet favorit: RTRW{' '}
-                          {m.favoriteOutlet === 'pemuda'
-                            ? 'Pemuda'
-                            : 'AWANNCOSTA'}
+                          Outlet favorit: {getOutletFull(m.favoriteOutlet)}
                         </p>
                       </div>
                     </div>
@@ -669,11 +652,11 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                 </p>
               </div>
 
-              <div className="mt-5 w-full flex gap-2.5">
+              <div className="mt-5 w-full">
                 <button
                   type="button"
                   onClick={() => copyText(member.serialCode)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-[#DED9CF] dark:border-white/15 text-xs font-semibold hover:bg-[#F3EFE6] dark:hover:bg-white/5 transition-colors cursor-pointer"
+                  className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-[#DED9CF] dark:border-white/15 text-xs font-semibold hover:bg-[#F3EFE6] dark:hover:bg-white/5 transition-colors cursor-pointer"
                 >
                   {copiedCode === member.serialCode ? (
                     <>
@@ -687,14 +670,10 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                     </>
                   )}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => onSimulateCashierWithMember(member.id)}
-                  className="flex-1 py-2.5 px-3 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer"
-                >
-                  Simulasi Scan Kasir
-                </button>
               </div>
+              <p className="mt-3 text-[11px] text-[#646D78] dark:text-[#94A3B8]">
+                Perlihatkan kode QR ini agar dipindai oleh kasir saat pembayaran.
+              </p>
             </div>
           </div>
         )}
@@ -779,23 +758,16 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
               </div>
             </div>
 
-            <div className="flex gap-2.5">
+            <div className="space-y-2.5">
               {selectedVoucher.status === 'active' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedVoucher(null);
-                    onSimulateCashierWithMember(member.id);
-                  }}
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
-                >
-                  Pakai di Kasir Demo
-                </button>
+                <p className="text-[11px] text-center text-[#646D78] dark:text-[#94A3B8]">
+                  Tunjukkan kode QR voucher ini kepada kasir untuk menukarkan hadiah.
+                </p>
               )}
               <button
                 type="button"
                 onClick={() => setSelectedVoucher(null)}
-                className="flex-1 py-2.5 px-4 rounded-xl border border-[#DED9CF] dark:border-white/15 text-xs font-semibold cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-xl bg-[#16202C] dark:bg-[#F4F1EA] text-white dark:text-[#16202C] text-xs font-semibold cursor-pointer"
               >
                 Tutup
               </button>
@@ -820,7 +792,7 @@ export const MemberAppView: React.FC<MemberAppViewProps> = ({
                   {selectedTx.id}
                 </p>
                 <h3 className="font-serif-display text-2xl mt-0.5">
-                  RTRW {selectedTx.outlet === 'pemuda' ? 'Pemuda' : 'AWANNCOSTA'}
+                  {getOutletFull(selectedTx.outlet)}
                 </h3>
               </div>
               <button

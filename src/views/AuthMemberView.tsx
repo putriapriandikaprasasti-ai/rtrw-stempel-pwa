@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ArrowLeft, Calendar, Moon, Sun } from 'lucide-react';
 import { Member } from '../types';
 
@@ -30,6 +30,47 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState('');
   const [error, setError] = useState('');
+  const birthdayInputRef = useRef<HTMLInputElement | null>(null);
+
+  const openDatePicker = () => {
+    const input = birthdayInputRef.current;
+    if (!input) return;
+    if (typeof input.showPicker === 'function') {
+      try {
+        input.showPicker();
+        return;
+      } catch {
+        // Fallback below if browser blocks showPicker
+      }
+    }
+    input.focus();
+    input.click();
+  };
+
+  const formatBirthdayIndonesian = (isoOrText: string): string | undefined => {
+    const trimmed = isoOrText.trim();
+    if (!trimmed) return undefined;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+    if (!match) return trimmed;
+    const [, year, month, day] = match;
+    const months = [
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
+    ];
+    const monthName = months[Number(month) - 1];
+    if (!monthName) return trimmed;
+    return `${Number(day)} ${monthName} ${year}`;
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,7 +81,7 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
     }
     const ok = onLoginMember(identifier.trim(), pin.trim());
     if (!ok) {
-      setError('Akun tidak ditemukan atau PIN tidak cocok. Coba akun demo di bawah.');
+      setError('Akun tidak ditemukan atau PIN tidak cocok. Periksa kembali nomor/email dan PIN Anda.');
     }
   };
 
@@ -63,15 +104,8 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
       name: name.trim(),
       contact: identifier.trim(),
       pin: pin.trim(),
-      birthday: birthday.trim() || undefined,
+      birthday: formatBirthdayIndonesian(birthday),
     });
-  };
-
-  const fillDemoLogin = () => {
-    setMode('masuk');
-    setIdentifier('081234567890');
-    setPin('123456');
-    setError('');
   };
 
   const isMasukReady = identifier.trim().length > 3 && pin.trim().length === 6;
@@ -260,18 +294,31 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-[#16202C] dark:text-[#E2E8F0] mb-1.5">
+                    <label
+                      htmlFor="register-birthday"
+                      className="block text-xs font-medium text-[#16202C] dark:text-[#E2E8F0] mb-1.5"
+                    >
                       Tanggal lahir (opsional)
                     </label>
                     <div className="relative">
                       <input
-                        type="text"
+                        id="register-birthday"
+                        ref={birthdayInputRef}
+                        type="date"
+                        max="2026-12-31"
                         value={birthday}
                         onChange={(e) => setBirthday(e.target.value)}
-                        placeholder="dd/mm/yyyy (cth: 15/11/1998)"
-                        className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-white dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-sm placeholder:text-[#9BA3AE] focus:outline-none focus:border-[#16202C] dark:focus:border-white"
+                        onClick={openDatePicker}
+                        className="w-full px-3.5 py-2.5 pr-11 rounded-xl bg-white dark:bg-[#0E1319] border border-[#DED9CF] dark:border-white/15 text-sm focus:outline-none focus:border-[#16202C] dark:focus:border-white [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:pointer-events-none cursor-pointer"
                       />
-                      <Calendar className="w-4 h-4 text-[#646D78] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <button
+                        type="button"
+                        onClick={openDatePicker}
+                        aria-label="Pilih tanggal lahir"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg flex items-center justify-center text-[#646D78] hover:text-[#16202C] dark:hover:text-white hover:bg-[#FAF8F4] dark:hover:bg-white/10 transition-colors cursor-pointer"
+                      >
+                        <Calendar className="w-4 h-4" />
+                      </button>
                     </div>
                     <p className="mt-1 text-[11px] text-[#646D78] dark:text-[#94A3B8]">
                       Dapat gratis 1 minuman di bulan ulang tahunmu.
@@ -296,28 +343,6 @@ export const AuthMemberView: React.FC<AuthMemberViewProps> = ({
                   </button>
                 </form>
               )}
-
-              {/* Demo Account Box */}
-              <div className="mt-5 rounded-xl bg-[#F3EFE6] dark:bg-[#0E1319] border border-[#E6E2DA] dark:border-white/10 p-3.5 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-semibold tracking-[0.16em] uppercase text-[#646D78] dark:text-[#94A3B8]">
-                    AKUN DEMO
-                  </p>
-                  <p className="font-mono-code text-[11px] text-[#394452] dark:text-[#CBD5E1] mt-1">
-                    081234567890 · PIN 123456 (Sekar Ayu)
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    fillDemoLogin();
-                    onLoginMember('081234567890', '123456');
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-[#DED9CF] dark:border-white/15 text-[11px] font-semibold hover:bg-[#16202C] hover:text-white dark:hover:bg-white dark:hover:text-[#16202C] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Isi &amp; Masuk
-                </button>
-              </div>
             </div>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowUpRight, MapPin, Moon, Sun, Clock, Phone, X, Coffee, Download } from 'lucide-react';
 import { StampCard } from '../components/StampCard';
-import { LandingContent, OutletInfo, ProgramRules } from '../types';
+import { LandingContent, OutletInfo, ProgramRules, StaffMemberUiConfig } from '../types';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -15,6 +15,7 @@ interface LandingViewProps {
   onGoStaffAuth: () => void;
   rules: ProgramRules;
   landingContent: LandingContent;
+  uiConfig: StaffMemberUiConfig;
   outlets: OutletInfo[];
 }
 
@@ -25,6 +26,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
   onGoStaffAuth,
   rules,
   landingContent,
+  uiConfig,
   outlets,
 }) => {
   const [selectedOutlet, setSelectedOutlet] = useState<OutletInfo | null>(null);
@@ -144,6 +146,9 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 serialCode={landingContent.heroCardCode}
                 stamps={4}
                 interactive={true}
+                brandTitle={uiConfig.cardBrandTitle}
+                cardSubtitle={uiConfig.cardSubtitle}
+                cardNumberLabel={uiConfig.cardNumberLabel}
               />
               <p className="mt-5 text-center text-xs text-[#646D78] dark:text-[#94A3B8] tracking-wide">
                 {landingContent.heroCardCaption ||
