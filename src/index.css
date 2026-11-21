@@ -1,0 +1,93 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-serif: "Playfair Display", Georgia, serif;
+    --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #FAF8F4;
+    color: #16202C;
+  }
+
+  .dark body {
+    background-color: #0E1319;
+    color: #F4F1EA;
+  }
+}
+
+.font-serif-display {
+  font-family: var(--font-serif);
+}
+
+.font-mono-code {
+  font-family: var(--font-mono);
+}
+
+/* Signature Brushed Aluminum Stamp Card Texture */
+.brushed-metal-card {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.05) 0px,
+      rgba(255, 255, 255, 0.05) 1px,
+      rgba(0, 0, 0, 0.02) 1px,
+      rgba(0, 0, 0, 0.02) 2px
+    ),
+    linear-gradient(
+      135deg,
+      #E4E7EB 0%,
+      #CED4DC 28%,
+      #E9ECEF 52%,
+      #C3CAD3 78%,
+      #D8DEE6 100%
+    );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 2px rgba(22, 32, 44, 0.14),
+    0 22px 44px -14px rgba(22, 32, 44, 0.24);
+}
+
+.dark .brushed-metal-card {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.03) 0px,
+      rgba(255, 255, 255, 0.03) 1px,
+      rgba(0, 0, 0, 0.06) 1px,
+      rgba(0, 0, 0, 0.06) 2px
+    ),
+    linear-gradient(
+      135deg,
+      #2F3946 0%,
+      #222A35 32%,
+      #374251 56%,
+      #1D242E 82%,
+      #2B3440 100%
+    );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.14),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.45),
+    0 22px 44px -14px rgba(0, 0, 0, 0.55);
+}
+
+.stamp-slot-recessed {
+  box-shadow: inset 0 1.5px 3px rgba(15, 23, 42, 0.16);
+}
+
+.dark .stamp-slot-recessed {
+  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* Custom thin scrollbar for mobile preview & horizontal tabs */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
